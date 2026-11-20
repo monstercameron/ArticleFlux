@@ -499,6 +499,10 @@ func Reader(p readerProps) ui.Node {
 	// GetItem response that has not come back yet, and re-rendering the tree
 	// when it changes would be a render per track for no visible difference.
 	autoWant := ui.UseRef("")
+	// speakGen numbers the browser-voice starts, so a retry waiting for an
+	// article to be drawn can tell that the reader has since stopped it or
+	// started something else, and does nothing.
+	speakGen := ui.UseRef(0)
 	// The command palette. paletteActive is the highlighted row, kept in state
 	// rather than in the DOM so the keyboard and the pointer cannot disagree
 	// about what Enter will do.
@@ -798,11 +802,6 @@ func Reader(p readerProps) ui.Node {
 	// opens late: scrolling from where the clock says rather than from where the
 	// text appeared would drop the reader into the middle of a paragraph.
 	showReadAt := ui.UseRef(time.Duration(-1))
-	// showMeasured is the id whose travel distance has been measured. Measuring
-	// forces a layout, and the answer only changes when the article does — so
-	// this is what keeps a four-times-a-second tick from doing it four times a
-	// second.
-	showMeasured := ui.UseRef("")
 	// showNarrating is whether the voice has PROVED it is playing — an actual
 	// timeupdate from the <audio> element, not merely a play() that was issued.
 	//
@@ -1893,7 +1892,23 @@ func Reader(p readerProps) ui.Node {
 		if c == nil || it == nil || it.GetRead() {
 			return
 		}
+		// Whether it is ALREADY read is asked of the list, not of the copy that
+		// was passed in. The stream, the bodies and the playback queue each hold
+		// their own copy of an item and none of them is updated by the flip below,
+		// so a second path to the same article (opening it, scrolling into it,
+		// hearing it out) saw read=false on its copy and took the count down again:
+		// three times an article under Keep playing, which is how a rail that said
+		// 35 said 8 when 26 were unread.
+		for _, cur := range itemsRef.Get() {
+			if cur.GetId() == it.GetId() {
+				if cur.GetRead() {
+					return
+				}
+				break
+			}
+		}
 		setItems(withRead(itemsRef.Get(), it.GetId(), true))
+		setLocalRead(stream, bodies, it.GetId(), true)
 		adjustUnread(feeds, totalUnread, it.GetSourceId(), -1)
 		adjustTopicUnread(topicUnread, it, -1)
 		// My Feed's badge follows the same optimistic path as the unread counts.
@@ -1914,6 +1929,7 @@ func Reader(p readerProps) ui.Node {
 			if err != nil && !keptOptimistic(err) {
 				ui.PostAsync(func() {
 					setItems(withRead(itemsRef.Get(), it.GetId(), false))
+					setLocalRead(stream, bodies, it.GetId(), false)
 					adjustUnread(feeds, totalUnread, it.GetSourceId(), 1)
 					adjustTopicUnread(topicUnread, it, 1)
 					if ranked {
@@ -2479,6 +2495,15 @@ func Reader(p readerProps) ui.Node {
 			addErr.Set(tr.T("reader", "errNeedURL"))
 			return
 		}
+		// Text that is not an address is refused here, in words about addresses.
+		// The field strips spaces (type=url), so "not a url at all" arrived at
+		// the server as "notaurlatall" and came back as "Something went wrong on
+		// the server" — a fault report for a typo (H8).
+		if !hasWebScheme(url) {
+			addErr.Set(tr.T("reader", "errNotAddress"))
+			platform.FocusField("add-feed")
+			return
+		}
 		if addBusy.Get() {
 			return
 		}
@@ -2566,16 +2591,31 @@ func Reader(p readerProps) ui.Node {
 					// catalog key when there is one and falls back to the
 					// status message otherwise — see its own doc comment.
 					addErr.Set(tr.T("reader", "errAddFeed", i18n.Args{"err": serverText(tr, err)}))
+					// Back to the field the refusal is about, so the reader can
+					// fix it without finding it first (and a screen reader is
+					// put where the error is).
+					platform.FocusField("add-feed")
 					// The address is not a feed. That is not the end of the
 					// answer — most addresses people paste are pages, and the
 					// free rungs of the ladder find the feed for four sites in
 					// five. Running them here rather than making the reader
 					// press something else is the difference between an error
 					// and a next step.
-					act.Get().analyzeSite(false)
+					//
+					// Only for THAT answer. A 404, a host that would not answer,
+					// a private address or a broken feed has no page to look
+					// through, and the ladder's own "No feed here — this page
+					// doesn't publish one" would contradict the reason just given
+					// (H8).
+					if k := serverKey(err); k == "" || k == "srv.feedNotAFeed" {
+						act.Get().analyzeSite(false)
+					}
 					return
 				}
 				addOpen.Set(false)
+				// Closing here, not through closeAddFeed, so nothing handed focus
+				// back to the control that opened the dialog (H13).
+				platform.RestoreFocus("addFeed")
 				addURL.Set("")
 				addTitle.Set("")
 				addNewCat.Set("")
@@ -4405,7 +4445,7 @@ func Reader(p readerProps) ui.Node {
 	}
 
 	trackEnded := func() {
-		if !speakAuto.Get() {
+		if playbackStep(trackFinished, speakAuto.Get(), true, 0) == stepStop {
 			speakID.Set("")
 			speakState.Set("")
 			return
@@ -4423,7 +4463,7 @@ func Reader(p readerProps) ui.Node {
 			// the offline outbox.
 			act.Get().readArticle(done)
 		}
-		if next == nil {
+		if playbackStep(trackFinished, true, next != nil, 0) == stepEndOfList {
 			// The end of the loaded list, not the end of the feed: more may be
 			// a page away. Stopping is still right — silently paging and
 			// carrying on would turn "play the list" into "play forever".
@@ -4539,6 +4579,10 @@ func Reader(p readerProps) ui.Node {
 		// note that says "start this one the moment it does".
 		autoWant.Set(next.GetId())
 		speakState.Set("loading")
+		// See startPlayback: the floating transport's answer belongs to the
+		// article that has just ended, and "Preparing" under its title is what
+		// the reader would otherwise catch for a frame.
+		speakVisible.Set(true)
 		openItem(next)
 		// Usually already here: prefetchAround fetched this body when the
 		// previous article was opened, so the common case skips the wait
@@ -4732,6 +4776,10 @@ func Reader(p readerProps) ui.Node {
 		if it == nil {
 			return
 		}
+		// A new start: whatever a browser-voice retry or a late `end` from the
+		// previous one was about to do is no longer this session's to do.
+		gen := speakGen.Get() + 1
+		speakGen.Set(gen)
 		onState := func(s string) {
 			ui.PostAsync(func() {
 				// "idle" is the <audio> element's `ended` event, which is the
@@ -4870,6 +4918,14 @@ func Reader(p readerProps) ui.Node {
 		if prev == it.GetId() {
 			prev = ""
 		}
+		if speakID.Get() != it.GetId() {
+			// The transport that follows the reader is only for a playing article
+			// whose own bar is off screen, and the answer to that was worked out for
+			// the article BEFORE this one. Left as it was, the floating bar showed
+			// for a frame at every handover — until the observer reported on the new
+			// article's bar — so a new story starts from "its bar is in view".
+			speakVisible.Set(true)
+		}
 		speakID.Set(it.GetId())
 		if speakSmart.Get() {
 			// The listening ticket rides on the item, minted by GetItem (§10.7).
@@ -4966,8 +5022,68 @@ func Reader(p readerProps) ui.Node {
 		// The rendered text, not the stored HTML: what is spoken should be what
 		// is on screen, and the DOM has already resolved entities and dropped
 		// anything hidden.
-		platform.SpeakElement(`[data-article-id="`+it.GetId()+`"] .article-body`, onState)
-		speakState.Set("playing")
+		//
+		// The headline first, and where it is from: in a run of short articles it
+		// is the only thing that says which story this is.
+		id := it.GetId()
+		title := spokenTitle(it.GetTitle())
+		if title == "" {
+			title = tr.T("article", "untitled")
+		}
+		lead := title
+		if src := strings.TrimSpace(it.GetSourceTitle()); src != "" {
+			lead = tr.T("reader", "speakLead", i18n.Args{"title": title, "source": src})
+		}
+		noText := tr.T("reader", "speakNoText", i18n.Args{"title": title})
+		// The report goes through PostAsync AND is dropped if this start has been
+		// replaced since: a stopped or superseded run's late `end` must not be
+		// taken for the end of the article now playing.
+		voiceState := func(s string) {
+			ui.PostAsync(func() {
+				if speakGen.Get() == gen {
+					onState(s)
+				}
+			})
+		}
+		// attempt asks the page to be read. The article may not be in it YET —
+		// openItem has only just been called, and the body may still be on its way
+		// — and that is not the same as the voice having finished, which is how a
+		// list used to be "played" in a third of a second without a word spoken.
+		var attempt func(tries int)
+		attempt = func(tries int) {
+			res := platform.SpeakElement(`[data-article-id="`+id+`"] .article-body`, lead, noText, voiceState)
+			if res == platform.SpeakStarted {
+				speakState.Set("playing")
+				return
+			}
+			ev := trackNotRendered
+			if res == platform.SpeakEmpty {
+				ev = trackNothing
+			}
+			switch playbackStep(ev, speakAuto.Get(), true, tries) {
+			case stepAnnounce:
+				// Said aloud (the headline and that there is nothing to read) and
+				// shown, so a picture-only article is neither skipped in silence
+				// nor mistaken for a fault. The voice's own end carries on.
+				sayVoice(tr.T("reader", "noText"))
+				speakState.Set("playing")
+			case stepRetry:
+				speakState.Set("loading")
+				time.AfterFunc(renderWaitEvery, func() {
+					ui.PostAsync(func() {
+						if speakGen.Get() == gen && speakID.Get() == id {
+							attempt(tries + 1)
+						}
+					})
+				})
+			default:
+				// It never arrived. Say so and go on without it: trackEnded stops
+				// the session when Keep playing is off.
+				sayVoice(tr.T("reader", "noBodyToRead"))
+				trackEnded()
+			}
+		}
+		attempt(0)
 	}
 
 	act.Get().listen = func(id string) {
@@ -5003,7 +5119,18 @@ func Reader(p readerProps) ui.Node {
 		startPlayback(full)
 	}
 
-	act.Get().speakSeen = func(visible bool) { speakVisible.Set(visible) }
+	act.Get().speakSeen = func(visible bool) {
+		// "Not on screen" while the pane is still travelling to the article that is
+		// playing is the journey, not the destination: the observer's first report
+		// for a new story is taken before the scroll has reached it, and acting on
+		// it put the floating transport up for the length of the travel (the flash
+		// at every Keep-playing handover). The report that matters comes when the
+		// bar arrives, or when the reader scrolls away from it later.
+		if !visible && expectFocus.Get() != "" && expectFocus.Get() == speakID.Get() {
+			return
+		}
+		speakVisible.Set(visible)
+	}
 
 	// listenJump brings the article being read back on screen. The floating
 	// transport's title is what invokes it — see nowPlaying.
@@ -5223,7 +5350,7 @@ func Reader(p readerProps) ui.Node {
 	// holds still with a paragraph below the fold.
 	slideMeasure := func(scanSecs float64) {
 		platform.SetVar(".slides", "--shift",
-			platform.Px(slideShift(platform.ScrollOverflow(".slide-stage"), scanSecs)))
+			platform.Px(slideShift(platform.ScrollOverflow(".slide-stage", ".slide-flow", ".slide-body"), scanSecs)))
 	}
 
 	// slideWords is how long this story is, preferring the fetched article over
@@ -5351,7 +5478,6 @@ func Reader(p readerProps) ui.Node {
 		showStart.Set(time.Now())
 		showHeld.Set(0)
 		showReadAt.Set(-1)
-		showMeasured.Set("")
 		// Per STORY, not per session: the narrator has to prove itself again on
 		// every segment, because a synthesis can fail on the third story after
 		// two that worked, and a flag set once at the start would leave the
@@ -5723,11 +5849,12 @@ func Reader(p readerProps) ui.Node {
 			opened = slideCardHold
 		}
 
-		// Measured once per story, when its text is finally on the page. Every
-		// tick would be a forced layout four times a second for an answer that
-		// only changes when the article does.
-		if ready && showMeasured.Get() != it.GetId() {
-			showMeasured.Set(it.GetId())
+		// Measured on every tick of the read phase and no other: before it the
+		// stage is hidden and its grid is still opening, so any answer is for a
+		// box the story will not have; after it, it is leaving. A picture that
+		// lands late, a font that swaps and a window that resizes all change the
+		// answer mid-story, and measuring once pinned whichever was true first.
+		if phase == "read" {
 			slideMeasure(slideScanSeconds(dwell, opened))
 		}
 		slideVars(slideFill(elapsed, dwell), slideScan(elapsed, opened, dwell))
@@ -5832,8 +5959,7 @@ func Reader(p readerProps) ui.Node {
 				scan = clamp01((pos - opened) / scanSecs)
 			}
 		}
-		if ready && scanSecs > 0 && showMeasured.Get() != it.GetId() {
-			showMeasured.Set(it.GetId())
+		if phase == "read" && scanSecs > 0 {
 			slideMeasure(scanSecs)
 		}
 		slideVars(fill, scan)
@@ -5861,6 +5987,8 @@ func Reader(p readerProps) ui.Node {
 		showAudio.Set(voice)
 		showVoice.Set("")
 		showPaused.Set(false)
+		// Where the reader was, for slideStop to give back (H13).
+		platform.RememberFocus("slideshow")
 		showOpen.Set(true)
 		// The transport is up when the mode opens and fades a few seconds later.
 		// The reader has just pressed something, so this is the one moment they
@@ -5915,6 +6043,10 @@ func Reader(p readerProps) ui.Node {
 		bedFrom.Set(false)
 		platform.StingOut()
 		showOpen.Set(false)
+		// Leaving by Escape dropped focus on <body>: the display that held it is
+		// gone and nothing had been told where it came from (H13). A no-op when
+		// the show was never opened, which slideStop's idempotence allows.
+		platform.RestoreFocus("slideshow")
 		showID.Set("")
 		showPhase.Set("card")
 		showPaused.Set(false)
@@ -6127,7 +6259,6 @@ func Reader(p readerProps) ui.Node {
 		showStart.Set(time.Now())
 		showHeld.Set(0)
 		showReadAt.Set(-1)
-		showMeasured.Set("")
 		slideVars(0, 0)
 		showPhase.Set("card")
 		showNarrating.Set(false)
@@ -6421,6 +6552,10 @@ func Reader(p readerProps) ui.Node {
 				}
 				notice.Set(tr.T("reader", "unsubscribed", i18n.Args{"feed": name}))
 				applyRailNumbers(nums)
+				// The gear the reader pressed is gone with its row, so the focus
+				// closeFeedSettings handed back to it fell to <body>: the sidebar's
+				// stop (the current row, or the first) takes it instead (H13).
+				platform.FocusIfLost(".pane-rail", ".feed-row")
 				// If they were reading it, that scope no longer exists.
 				if sel.Get().SourceID == id {
 					act.Get().pick(scope{Title: tr.T("stream", "all")})
@@ -6769,6 +6904,25 @@ func Reader(p readerProps) ui.Node {
 		wasSettingsOpen.Set(settingsOpen)
 		return nil
 	}, []any{settingsOpen})
+	// On a phone the tab menu filled the first screen, so a tab chosen — or
+	// arrived on — showed nothing of itself above the fold (H18). Bring its panel
+	// to the top whenever the tab CHANGES while Settings is open, and on entry
+	// only when the entry is to a tab other than the first: opening Settings
+	// plainly should still show the title and the menu.
+	scrolledFor := ui.UseRef("")
+	ui.UseEffect(func() func() {
+		if !settingsOpen {
+			scrolledFor.Set("")
+			return nil
+		}
+		tab, prev := string(setTab.Get()), scrolledFor.Get()
+		scrolledFor.Set(tab)
+		if prev == tab || (prev == "" && settingsTab(tab) == setReading) {
+			return nil
+		}
+		platform.ScrollSettingsIntoView()
+		return nil
+	}, []any{settingsOpen, setTab.Get()})
 	act.Get().setLogLevel = func(level string) {
 		logLevel.Set(level)
 		act.Get().loadStats()
@@ -7250,8 +7404,9 @@ func Reader(p readerProps) ui.Node {
 					dataNoteBad.Set(true)
 					return
 				}
-				platform.SaveFile(opmlFileName, opmlMIME, res.GetOpml())
-				dataNote.Set(tr.T("data", "exportSaved", i18n.Args{"name": opmlFileName}))
+				name := opmlFileName()
+				platform.SaveFile(name, opmlMIME, res.GetOpml())
+				dataNote.Set(tr.T("data", "exportSaved", i18n.Args{"name": name}))
 			})
 		}()
 	}
@@ -9127,6 +9282,12 @@ func Reader(p readerProps) ui.Node {
 	// rebuilding it on every scroll frame is pure waste.
 	hosts := hostsRef.Get()
 
+	// Whether the scope is one the reader does not have. Read by the list AND by
+	// the page heading, so the two name the scope identically.
+	scopeGone := sel.Get().Search == "" &&
+		scopeMissing(sel.Get(), loadedLists{feeds: !feedsLoading.Get(), tags: tagsKnown.Get(), folders: foldersKnown.Get()},
+			feeds.Get(), tags.Get(), folders.Get())
+
 	return html.Div(html.Props{Class: "shell", Data: map[string]string{
 		"view": string(pane.Get()),
 		// One attribute closes four grid tracks and recentres the article — the
@@ -9143,6 +9304,11 @@ func Reader(p readerProps) ui.Node {
 		// `data-speakvisible` and never matches `dataset.speakVisible`.
 		"speak-visible": strconv.FormatBool(speakVisible.Get()),
 	}},
+		// First in the shell, so first in the heading outline (G27). Absent
+		// behind Settings, which has an <h1> of its own. See readerHeading.
+		ui.If(pane.Get() != viewSettings, func() ui.Node {
+			return readerHeading(tr, listTitle(tr, listProps{sel: sel.Get(), missing: scopeGone}))
+		}),
 		html.Div(html.Props{Class: "panes"},
 			// railPane is a real component so GWC can bail out of re-rendering it
 			// when its props are unchanged — that is what stopped 150 sidebar rows
@@ -9181,16 +9347,14 @@ func Reader(p readerProps) ui.Node {
 			// equal, freezing the list at whatever it first rendered. The list is
 			// the thing that changes; memoizing it is all cost and no benefit.
 			listPane(tr, listProps{
-				items:      items.Get(),
-				sel:        sel.Get(),
-				current:    current.Get(),
-				unreadOnly: unreadOnly.Get(),
-				connected:  client.Get() != nil,
-				feeds:      len(feeds.Get()),
-				feedsKnown: !feedsLoading.Get(),
-				missing: sel.Get().Search == "" &&
-					scopeMissing(sel.Get(), loadedLists{feeds: !feedsLoading.Get(), tags: tagsKnown.Get(), folders: foldersKnown.Get()},
-						feeds.Get(), tags.Get(), folders.Get()),
+				items:       items.Get(),
+				sel:         sel.Get(),
+				current:     current.Get(),
+				unreadOnly:  unreadOnly.Get(),
+				connected:   client.Get() != nil,
+				feeds:       len(feeds.Get()),
+				feedsKnown:  !feedsLoading.Get(),
+				missing:     scopeGone,
 				hasMore:     nextCursor.Get() != "",
 				loadingMore: loadingMore.Get(),
 				loading:     itemsLoading.Get(),
@@ -9315,6 +9479,7 @@ func Reader(p readerProps) ui.Node {
 						onNameEdit:     onPwName,
 					},
 					smart: smartProps{
+						conn:        conn.Get(),
 						cfg:         smartCfg.Get(),
 						languages:   smartLangs.Get(),
 						locale:      tr.Locale(),
@@ -9348,6 +9513,7 @@ func Reader(p readerProps) ui.Node {
 					// about the server that only the Smart+ config can answer.
 					needs: settingsPrereqs(),
 					myFeed: myFeedProps{
+						conn:          conn.Get(),
 						profile:       myFeedProfile.Get(),
 						loading:       myFeedLoading.Get(),
 						err:           myFeedErr.Get(),
@@ -9438,6 +9604,8 @@ func Reader(p readerProps) ui.Node {
 				translations: articleTr.Get(),
 				translateOK:  trConsent.Get() == 1 || (trConsent.Get() == 0 && !p.owner),
 				locale:       tr.Locale(),
+				// Loaded and empty: there is nothing for j and k to move through.
+				listEmpty: len(items.Get()) == 0 && !itemsLoading.Get(),
 			}),
 		),
 		// Outside `.panes`, because it is fixed to the viewport rather than to

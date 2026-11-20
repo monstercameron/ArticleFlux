@@ -481,6 +481,19 @@ func (d readerListeners) wire() {
 		})
 		return l.Release
 	}, []any{})
+
+	// The article list is ONE Tab stop, not one per row (H11, FEATURES §5): every
+	// row is tabindex -1 in the markup (itemRowAttrs) and this gives tabindex 0 to
+	// the current row after every render — or to the first rendered row when the
+	// current article is outside the virtual window or there is none — so Tab
+	// visits the list once and j/k and the arrows move inside it. The Go Blog's ten
+	// rows were ten Tab presses between the list header and the article. After
+	// EVERY render, no dependency list, because the window slides under a scroll
+	// and a row that was the stop may no longer be in the document.
+	ui.UseEffect(func() func() {
+		platform.RovingSync(".list-scroll", ".item-row", ".item-row[aria-current='true']", ".item-row")
+		return nil
+	})
 }
 
 // The rail's keyboard vocabulary, in selectors. Primary items are what the up

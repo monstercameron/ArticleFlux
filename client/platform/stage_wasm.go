@@ -505,8 +505,9 @@ func SetVar(selector, name, value string) {
 	el.Get("style").Call("setProperty", name, value)
 }
 
-// ScrollOverflow is how much taller an element's content is than its box, in CSS
-// pixels, or 0 when it fits.
+// ScrollOverflow is how far a story has to travel to be read, in CSS pixels, or 0
+// when it does not have to: the height of `content` beyond the height of the `box`
+// that shows it, less the `trail`'s own bottom padding.
 //
 // This is the measurement that decides whether a slide scrolls at all. It has to
 // be taken from the DOM rather than estimated from the word count, because what
@@ -515,21 +516,48 @@ func SetVar(selector, name, value string) {
 // wrong in both directions, and both are visible: a slide that scrolls when it
 // did not need to, or one that holds still with a paragraph below the fold.
 //
-// Never negative. A box with room to spare reports a scrollHeight equal to its
-// clientHeight, but sub-pixel layout can put it a hair under, and a negative
-// "overflow" fed to a transform scrolls the article the wrong way.
-func ScrollOverflow(selector string) float64 {
+// # Three things the first version got wrong
+//
+// It read the BOX's scrollHeight, and that is (1) shortened by the very
+// transform the answer drives — a transformed child's overflow is measured where
+// it has been moved to, so asking again mid-scroll returned the distance still
+// to go, not the distance — and (2) a number that includes the trailing room the
+// story is given so its last paragraph can come to a reading position. A story
+// that fits with that room to spare scrolled anyway, up under its own header: a
+// 474px comic on a 915px phone moved 214px to make room for 238px of nothing.
+// So the content's layout height (offsetHeight, which no transform touches) is
+// compared with the box, and a story whose text fits is told to hold still. The
+// room is only the travel's far end, wanted once there IS travel.
+//
+// (3) it was taken once, while the card was still up. The card and the stage
+// share a grid whose rows are animating at that moment, so the box was
+// measured at a fraction of the height it ends up. The caller measures every
+// tick of the read phase now, and this is cheap enough to allow it.
+//
+// Never negative, and 0 under a pixel: sub-pixel layout can put a fitting story
+// a hair over, and a nonzero "overflow" fed to a transform scrolls it.
+func ScrollOverflow(boxSel, contentSel, trailSel string) float64 {
 	doc := js.Global().Get("document")
 	if !doc.Truthy() {
 		return 0
 	}
-	el := doc.Call("querySelector", selector)
-	if !el.Truthy() {
+	box := doc.Call("querySelector", boxSel)
+	content := doc.Call("querySelector", contentSel)
+	if !box.Truthy() || !content.Truthy() {
 		return 0
 	}
-	over := finite(el.Get("scrollHeight")) - finite(el.Get("clientHeight"))
+	over := finite(content.Get("offsetHeight")) - finite(box.Get("clientHeight"))
 	if over < 1 {
 		return 0
+	}
+	// What the story is given at its foot is not text, so it does not make a
+	// story that fits into one that does not.
+	if trail := doc.Call("querySelector", trailSel); trail.Truthy() {
+		pad := js.Global().Call("parseFloat",
+			js.Global().Call("getComputedStyle", trail).Get("paddingBottom")).Float()
+		if pad == pad && over <= pad {
+			return 0
+		}
 	}
 	return over
 }

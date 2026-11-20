@@ -79,6 +79,11 @@ func RailMove(containerSelector, primarySel, groupSel string, dy, dx int) bool {
 	}
 	g := closest(active, groupSel)
 	if dy != 0 {
+		// At the edge of a windowed run the next row is not in the document, and
+		// the document's next row is a different section's. See RailReach.
+		if RailReach(active, dy) {
+			return true
+		}
 		if g.Truthy() && !active.Call("matches", primarySel).Bool() {
 			qsel(g, primarySel).Call("focus")
 		}

@@ -544,3 +544,21 @@ func TestDirectionalRulesAreLogical(t *testing.T) {
 		t.Error("the filmstrip no longer reads --dirx, so panes slide the wrong way in a right-to-left interface")
 	}
 }
+
+// English that survives in a right-to-left interface must not be turned inside
+// out (".Everything this reader does", "OF 10 2"), and a keyboard shortcut must
+// keep its order. Both are one rule each in bidi.go, keyed off the switch the
+// root sets, so what is pinned here is that the rules exist and stay gated.
+func TestFallbackTextTakesItsOwnDirection(t *testing.T) {
+	sheet := sheetText(t)
+	for _, want := range []string{
+		`:root[data-fallback="true"]`,
+		"unicode-bidi:plaintext",
+		"::placeholder",
+		".help-keys",
+	} {
+		if !strings.Contains(strings.ReplaceAll(sheet, " ", ""), strings.ReplaceAll(want, " ", "")) {
+			t.Errorf("the sheet no longer carries %q, so English fallback in a right-to-left interface reads backwards", want)
+		}
+	}
+}

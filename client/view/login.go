@@ -544,8 +544,8 @@ func Login(p loginProps) ui.Node {
 	// worse password.
 	//
 	// No action and no submit handler: the button owns submission, and
-	// `onsubmit: return false` stops the browser navigating if a stray Enter
-	// reaches the form before the key handler does. That navigation would look
+	// suppressSubmit stops the browser navigating if a stray Enter reaches the
+	// form before the key handler does. That navigation would look
 	// like the page reloading itself and losing what was typed.
 	if recovering.Get() {
 		return recoverCard(recoverCardProps{
@@ -561,7 +561,7 @@ func Login(p loginProps) ui.Node {
 
 	return html.Main(html.Props{Class: "login", Data: map[string]string{"phase": "login"}},
 		html.Form(html.Props{Class: "login-card",
-			Raw: map[string]any{"onsubmit": "return false"}},
+			OnSubmit: suppressSubmit()},
 			// The wordmark is this screen's heading, because there is no other:
 			// without one a screen reader's heading list for the sign-in page
 			// was empty, and the first thing it could jump to was a text box.
@@ -694,7 +694,7 @@ func recoverCard(p recoverCardProps) ui.Node {
 	}
 	return html.Main(html.Props{Class: "login", Data: map[string]string{"phase": "recover"}},
 		html.Form(html.Props{Class: "login-card",
-			Raw: map[string]any{"onsubmit": "return false"}},
+			OnSubmit: suppressSubmit()},
 			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("login", "mark"))),
 			html.H1(html.Props{Class: "login-title"}, html.Text(tr.T("login", "recoverTitle"))),
 			html.P(html.Props{Class: "login-lede"}, html.Text(tr.T("login", "recoverLede"))),
@@ -1097,4 +1097,25 @@ func loginMessage(tr i18n.Runtime, err error) string {
 	default:
 		return tr.T("login", "errGeneric")
 	}
+}
+
+// noSubmit is the one handler every sign-in, recovery and setup form shares.
+var noSubmit ui.Handler
+
+// suppressSubmit is a submit handler that only cancels the navigation.
+//
+// It was the inline attribute `onsubmit="return false"`, which the page's
+// content-security-policy refuses ("Executing inline event handler violates…"):
+// one console error per render of the form (H26), and — because the browser
+// never ran it — a stray Enter that navigated anyway whenever the policy won.
+// A handler wired through the framework is not an inline attribute.
+//
+// Built on first use and kept: ui.WrapHandler on a bare func allocates a js.Func
+// nothing can release, so it must happen once for the life of the page, not once
+// per render; and not at package init, when the runtime is not ready to wrap.
+func suppressSubmit() ui.Handler {
+	if noSubmit.Value() == nil {
+		noSubmit = ui.WrapHandler(func(e ui.FormEvent) { e.PreventDefault() })
+	}
+	return noSubmit
 }

@@ -87,6 +87,11 @@ func (d delegatedClicks) wire() {
 		return l.Release
 	}, []any{})
 
+	// A link inside an article leaves the app in a new tab, not in this one (H4).
+	ui.UseEffect(func() func() {
+		return platform.OnExternalLinks().Release
+	}, []any{})
+
 	// Wheel over a live view scrolls the REMOTE page (§10.1d).
 	//
 	// One listener for every live view there will ever be, registered once, for

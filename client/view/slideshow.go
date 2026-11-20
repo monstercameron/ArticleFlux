@@ -1240,6 +1240,26 @@ const (
 	glyphSlideNext = "›"
 )
 
+// slideArrowStep is the step an arrow key takes in the show: +1 for Next, -1 for
+// Previous.
+//
+// The rule is that an arrow goes where it points, on the screen. Next is at the
+// end of the reading order, which is the right in a left-to-right interface and
+// the LEFT in a right-to-left one (the transport mirrors with the document), so
+// the same key answers the opposite way there. A plain function of the key and
+// the direction rather than a read of the document inside it, so it can be tested
+// without one.
+func slideArrowStep(key string, rtl bool) int {
+	step := 1
+	if key == "ArrowLeft" {
+		step = -1
+	}
+	if rtl {
+		step = -step
+	}
+	return step
+}
+
 type slideProps struct {
 	open bool
 	// it is the story on screen. nil with open true is the moment between the
@@ -1413,7 +1433,11 @@ func slideBody(tr i18n.Runtime, p slideProps) ui.Node {
 						})))
 				}),
 			),
-			html.H1(html.Props{Class: "slide-head"}, html.Text(it.GetTitle())),
+			// dir="auto", the reader pane's rule for a headline: what a publisher
+			// wrote takes its direction from its own letters, not from the
+			// interface's. An English title in an Arabic interface was laid out
+			// against the wrong edge, with its punctuation on the wrong side.
+			html.H1(html.Props{Class: "slide-head", Raw: autoDir()}, html.Text(it.GetTitle())),
 			// **The broadcast is being written.** This is the one status that must
 			// be on the SLIDE rather than in the transport, and putting it in the
 			// transport was a real mistake: the transport fades after four
@@ -1466,9 +1490,14 @@ func slideBody(tr i18n.Runtime, p slideProps) ui.Node {
 				// words being said". A class would say the same thing and is
 				// the one of the two that gets renamed.
 				ui.If(!empty, func() ui.Node {
+					// dir="auto" on the box, for the reason articleBodyIn gives:
+					// the text resolves its own direction through the stylesheet,
+					// but bullets, quote bars and indents follow the BOX, and the
+					// slideshow's body had never been given the reader's rule.
 					return html.Div(html.Props{
 						Class: "slide-body",
 						Data:  map[string]string{"captioned": strconv.FormatBool(captioned)},
+						Raw:   autoDir(),
 					}, nodes...)
 				}),
 				// Said once, at the top of a script, because a reader who has

@@ -144,7 +144,44 @@ var (
 	ErrNotAFeed = errors.New("feed: not a recognisable feed")
 	// ErrTooLarge means the body exceeded MaxBodyBytes.
 	ErrTooLarge = errors.New("feed: body too large")
+	// ErrBrokenFeed means the bytes ARE a feed — they open with an RSS, Atom or
+	// RDF root — and do not parse. It also satisfies errors.Is(err, ErrNotAFeed),
+	// so everything that already refuses the latter refuses this too; it exists
+	// so the reader is told "there is a feed here and it is broken" rather than
+	// "this page doesn't publish one", which is a different problem with a
+	// different remedy (tell the publisher, not look for another address).
+	ErrBrokenFeed = errors.New("feed: the feed is malformed")
 )
+
+// HTTPError is a feed address that answered with something other than success.
+//
+// Typed rather than a formatted string so the caller that has to explain it to a
+// reader (the subscribe handler) can say "HTTP 404" in a sentence of its own and
+// not parse prose. Error() keeps the text it always had: it is what the feed's
+// Health panel shows.
+type HTTPError struct{ Status int }
+
+func (e *HTTPError) Error() string { return fmt.Sprintf("feed: HTTP %d", e.Status) }
+
+// looksLikeFeedXML reports whether a body opens like a syndication document: an
+// RSS, Atom or RDF root within its first couple of kilobytes, and not an HTML
+// page. The sniff is only used to classify a parse that has already FAILED.
+func looksLikeFeedXML(body []byte) bool {
+	head := body
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	h := strings.ToLower(string(head))
+	if strings.Contains(h, "<html") || strings.Contains(h, "<!doctype html") {
+		return false
+	}
+	for _, root := range []string{"<rss", "<feed", "<rdf:rdf", "<channel"} {
+		if strings.Contains(h, root) {
+			return true
+		}
+	}
+	return false
+}
 
 // Fetch retrieves and parses a feed.
 func (f *Fetcher) Fetch(ctx context.Context, feedURL string, cond Conditional) (*Parsed, error) {
@@ -183,7 +220,7 @@ func (f *Fetcher) Fetch(ctx context.Context, feedURL string, cond Conditional) (
 		return &Parsed{NotModified: true, ETag: cond.ETag, LastModified: cond.LastModified}, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("feed: HTTP %d", resp.StatusCode)
+		return nil, &HTTPError{Status: resp.StatusCode}
 	}
 
 	// Read one byte past the limit so exceeding it is detectable rather than
@@ -223,6 +260,9 @@ func (f *Fetcher) ParseBytes(body []byte, contentType, feedURL string, now time.
 
 	parsed, err := f.parser.Parse(strings.NewReader(string(decoded)))
 	if err != nil {
+		if looksLikeFeedXML(decoded) {
+			return nil, fmt.Errorf("%w: %w: %v", ErrBrokenFeed, ErrNotAFeed, err)
+		}
 		return nil, fmt.Errorf("%w: %v", ErrNotAFeed, err)
 	}
 	return Normalize(parsed, feedURL, now), nil
@@ -293,7 +333,7 @@ func normalizeItem(it *gofeed.Item, feedURL, feedAuthor string, now time.Time) I
 		out.Title = truncate(stripTags(out.Summary), 80)
 	}
 	if len(it.Authors) > 0 && it.Authors[0] != nil {
-		out.Author = strings.TrimSpace(it.Authors[0].Name)
+		out.Author = StripByline(it.Authors[0].Name)
 	}
 	if out.Author == "" {
 		// Fall back to the channel's author. Podcast feeds are the common case:
@@ -510,4 +550,14 @@ func countWordsText(text string) int {
 // people's private mail into a single row.
 func NaturalKey(feedURL string) string {
 	return "feed:" + urlnorm.DupeKey(feedURL)
+}
+
+// StripByline trims an author name and drops a leading "by ": the reader prints
+// its own "by", and a feed that stores the whole phrase made it "by by name".
+func StripByline(a string) string {
+	a = strings.TrimSpace(a)
+	if len(a) >= 3 && strings.EqualFold(a[:3], "by ") {
+		return strings.TrimSpace(a[3:])
+	}
+	return a
 }

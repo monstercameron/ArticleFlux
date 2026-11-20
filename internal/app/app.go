@@ -1921,6 +1921,87 @@ func (a *App) buildHandler() {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			fmt.Fprintln(w, "derived")
 		})
+
+		// Unsubscribe the dev account from every feed whose address contains
+		// ?match=…, and say how many went.
+		//
+		// The e2e suite shares ONE account across every spec, and a spec that adds
+		// a feed has to take it away again or every spec after it runs against a
+		// different reader: one left-behind probe feed turned "1 of 5" into "1 of
+		// 6" in six slideshow tests that had nothing to do with it. Taking it away
+		// through the interface — hover the row, open its settings, arm, confirm —
+		// is four chances to fail in a `finally` that is already running because
+		// something failed. This is the cleanup that cannot be flaky. By address
+		// rather than by title because the address is what the spec chose.
+		//
+		// DevMode only, with its neighbours; POST only; and it refuses an empty
+		// match, which would otherwise mean "everything".
+		mux.HandleFunc("/debug/unsubscribe", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "POST only", http.StatusMethodNotAllowed)
+				return
+			}
+			match := r.URL.Query().Get("match")
+			if match == "" {
+				http.Error(w, "match is required", http.StatusBadRequest)
+				return
+			}
+			sc, err := a.devScope(r.Context())
+			if err != nil {
+				http.Error(w, "no local account", http.StatusPreconditionFailed)
+				return
+			}
+			feeds, err := a.repo.ListFeeds(r.Context(), sc)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			n := 0
+			for _, f := range feeds {
+				if !strings.Contains(f.FeedURL, match) {
+					continue
+				}
+				if err := a.repo.Unsubscribe(r.Context(), sc, f.SourceID); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				n++
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprintln(w, n)
+		})
+
+		// Open Discover suggestions, on demand: one per `d` parameter, replacing
+		// whatever was open, and none at all when there is no `d`. The e2e
+		// harness has no model key and no outlink evidence, so the real scoring
+		// pass never produces a card — and a page whose whole interaction is the
+		// card (Follow, Not for me, the Undo that holds the dismissal back) is
+		// otherwise untestable in a browser. Same DevMode gate as its neighbours.
+		mux.HandleFunc("/debug/seed-recommendations", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "POST only", http.StatusMethodNotAllowed)
+				return
+			}
+			sc, err := a.devScope(r.Context())
+			if err != nil {
+				http.Error(w, "no local account", http.StatusPreconditionFailed)
+				return
+			}
+			var recs []store.StoredRecommendation
+			for i, d := range r.URL.Query()["d"] {
+				recs = append(recs, store.StoredRecommendation{
+					Domain: d, Title: "Seeded " + d, Rung: 1, Score: float64(100 - i),
+					FeedURL:  "http://" + d + "/feed.xml",
+					Evidence: `["Seeded for the browser test: you have read three posts that link to ` + d + `."]`,
+				})
+			}
+			if err := a.repo.ReplaceRecommendations(r.Context(), sc, recs); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprintln(w, "seeded")
+		})
 	}
 
 	// Published scopes (§7.8b, TODO F29). Public by design and rate-limited on

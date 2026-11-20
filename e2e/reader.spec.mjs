@@ -747,8 +747,10 @@ test.describe('errors and edges', () => {
     await dialog.locator('[data-action="add-feed"]').click();
 
     // The refusal is in the dialog, beside the field that has to be fixed, and
-    // the dialog stays open — closing it would throw away the URL.
-    await expect(dialog.locator('.af-error')).toContainText(/Couldn't add that feed/);
+    // the dialog stays open — closing it would throw away the URL. Text that is
+    // not an address is refused before any call, in words about addresses (H8)
+    // rather than as a fault of the server's.
+    await expect(dialog.locator('.af-error')).toContainText(/not a web address/);
     await expect(dialog.locator('[data-role="add-feed"]')).toHaveValue('not-a-url');
   });
 

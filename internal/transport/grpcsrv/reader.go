@@ -538,6 +538,11 @@ func (s *ReaderServer) Subscribe(ctx context.Context, req *pb.SubscribeRequest) 
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, toStatus(err)
 		}
+		// What the server SAW, in a key the client can word (feederr.go): a 404, a
+		// host that would not answer, a feed that is broken, a private address.
+		if ke := feedAddError(err); ke != nil {
+			return nil, ke
+		}
 		// A bad URL is the user's mistake and they can fix it, so it is
 		// InvalidArgument rather than a generic failure.
 		return nil, status.Error(codes.InvalidArgument, err.Error())

@@ -21,7 +21,6 @@ import (
 	"github.com/monstercameron/ArticleFlux/internal/discover"
 	"github.com/monstercameron/ArticleFlux/internal/extract"
 	"github.com/monstercameron/ArticleFlux/internal/feed"
-	"github.com/monstercameron/ArticleFlux/internal/netguard"
 	"github.com/monstercameron/ArticleFlux/internal/outlinks"
 	"github.com/monstercameron/ArticleFlux/internal/signals"
 	"github.com/monstercameron/ArticleFlux/internal/smart"
@@ -295,6 +294,10 @@ func (s *Service) Search(ctx context.Context, sc store.Scope, query, sourceID st
 	return s.repo.Search(ctx, sc, query, sourceID, limit)
 }
 
+// ErrBadURL is an address with no host in it — text that is not a web address at
+// all. The transport words it as such instead of as a server fault.
+var ErrBadURL = errors.New("reader: not a URL")
+
 // Subscribe adds a feed by URL and immediately polls it.
 //
 // Polling synchronously is a deliberate latency choice: a user who has just
@@ -314,8 +317,14 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 		return store.Feed{}, false, "", errors.New("reader: no url")
 	}
 	if urlnorm.Host(rawURL) == "" {
-		return store.Feed{}, false, "", fmt.Errorf("reader: %q is not a URL", rawURL)
+		return store.Feed{}, false, "", fmt.Errorf("%w: %q", ErrBadURL, rawURL)
 	}
+
+	// Asked before subscribing, like the handler's own receipt: afterwards every
+	// answer is yes. It decides whether a failed first poll may undo the
+	// subscription, which it must never do to one the reader already had.
+	was, _ := s.Following(ctx, sc, rawURL)
+	wasFollowing := was[rawURL]
 
 	f, existed, err := s.repo.Subscribe(ctx, sc, store.NewSubscription{
 		NaturalKey: feed.NaturalKey(rawURL), FeedURL: rawURL, Title: title, FolderID: folderID,
@@ -336,35 +345,34 @@ func (s *Service) Subscribe(ctx context.Context, sc store.Scope, rawURL, title, 
 	if !existed || f.LastSuccess == "" {
 		_, desc, err := s.pollOneWithParsed(ctx, store.SourceRow{ID: f.SourceID, FeedURL: rawURL})
 		if err != nil {
-			// A refused ADDRESS is not a failed fetch, and the two cannot be
-			// treated the same. A feed that is briefly down deserves the
-			// subscription it just got — it will work tomorrow, and unsubscribing
-			// someone over one timeout is worse than an empty list plus a health
-			// warning. An address the guard will never dial (§21: link-local, the
-			// cloud metadata endpoint) has no tomorrow: keeping it would leave a
-			// permanent row in the sidebar, named after a URL, that can never
-			// hold an article — and the dialog would have reported success.
+			// A reader who already follows this address keeps it whatever the
+			// poll said: the feed is down today, and unsubscribing someone from
+			// a feed they chose because it failed once is the wrong remedy.
+			if wasFollowing {
+				return f, existed, "", nil
+			}
+			// A NEW subscription whose very first fetch fails is refused, for
+			// every reason the fetch can fail — a refused address (§21:
+			// link-local, the cloud metadata endpoint, a private range), a page
+			// that is not a feed, a feed that is broken, an HTTP 404 or 500, a
+			// host that cannot be reached. It used to keep all but the first
+			// two on the theory that a feed briefly down deserves its
+			// subscription; what that kept, in practice, was every typo: a 404
+			// was reported "Added", the dialog closed, and the rail grew a row
+			// named after its address that could never hold an article, with
+			// the real reason visible only in Feed settings -> Health (H5).
 			//
-			// So this one is rolled back and reported. The reader sees why in the
-			// field they typed it into, which is the only place the mistake can
-			// be fixed.
-			if errors.Is(err, netguard.ErrBlockedIP) || errors.Is(err, netguard.ErrScheme) {
-				s.rollback(ctx, sc, f.SourceID)
-				return store.Feed{}, false, "", err
-			}
-			// Not a feed at all — an HTML page, usually, which is what most
-			// people paste. Same reasoning as a refused address and a different
-			// remedy: the subscription is rolled back and the error is returned,
-			// because the caller's next move is the subscribe ladder (§11), and
-			// a ladder that runs while a junk source sits in the sidebar has
-			// already lost. A page that becomes a feed tomorrow is not a thing
-			// that happens; a page that HAS a feed is, and finding it is the
-			// point.
-			if errors.Is(err, feed.ErrNotAFeed) {
-				s.rollback(ctx, sc, f.SourceID)
-				return store.Feed{}, false, "", err
-			}
-			return f, existed, "", nil
+			// The address stays in the dialog with the reason beside it, which is
+			// the one place the mistake can be fixed. The subscription is rolled
+			// back and the source retired (A22 keeps the row, so the second
+			// attempt at a bad address is polled again and refused again rather
+			// than quietly succeeding), and the caller's next move is the
+			// subscribe ladder only where the answer was "not a feed" (§11): a
+			// page that becomes a feed tomorrow is not a thing that happens, a
+			// page that HAS a feed is. A feed that really is only down today is
+			// added by OPML import, which subscribes without fetching.
+			s.rollback(ctx, sc, f.SourceID)
+			return store.Feed{}, false, "", err
 		}
 		refreshed, ferr := s.repo.ListFeeds(ctx, sc)
 		if ferr == nil {

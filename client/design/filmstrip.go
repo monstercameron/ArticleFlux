@@ -146,4 +146,19 @@ func filmstrip(r func(string, string) css.Rule) {
 		r("animation-timing-function", "var(--e-out)"),
 		r("animation-fill-mode", "both"),
 	)
+	// The pane takes focus when Settings opens (reader.go), and focus-visible
+	// matches a programmatic focus until the first pointer press — which is every
+	// load of /settings/<tab> by address. motion.go's `:focus-visible` rule swaps
+	// the element's animation for the focus ring, and the moment focus LEFT the
+	// pane (the reader pressing a control in it) the animation swapped back, so
+	// pane-in started again: the whole pane jumped 4% to the right and faded in
+	// from nothing between the press and the release, the release landed on the
+	// neighbouring element, and no click happened (H6: "the first click is
+	// dropped"). Naming the same animation here keeps it one animation across the
+	// focus change, so nothing restarts; the ring is not wanted on a whole pane.
+	css.Global(".pane-settings:focus-visible", enter,
+		r("animation-duration", "var(--t3)"),
+		r("animation-timing-function", "var(--e-out)"),
+		r("animation-fill-mode", "both"),
+	)
 }

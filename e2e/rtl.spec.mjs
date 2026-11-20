@@ -155,4 +155,161 @@ test.describe('right to left', () => {
     expect(dirs.english).toEqual(['ltr', 'ltr', 'ltr']);
     expect(dirs.arabic).toEqual(['rtl', 'rtl', 'rtl']);
   });
+
+  // H9. With no key the catalog stays English inside a mirrored layout, and every
+  // run of text was laid out right to left: ".Everything this reader does...",
+  // "+Smart", "OF 10 2", "K Ctrl". One rule on the root (data-fallback) lets each
+  // run take its direction from its own letters while the layout stays mirrored.
+  //
+  // Asserted as rendered positions, not as the CSS property: what a reader sees is
+  // the order of the words, and the property is only how it is meant to get there.
+  test('English fallback text keeps its own order and its keys their own', async ({ page }) => {
+    await boot(page);
+    await expect.poll(() => page.evaluate(() => document.documentElement.dir)).toBe('rtl');
+    expect(await page.evaluate(() => document.documentElement.dataset.fallback)).toBe('true');
+
+    // Where, on screen, a word of an element's text starts: its left edge.
+    const wordLeft = (sel, word) => page.evaluate(([sel, word]) => {
+      const root = document.querySelector(sel);
+      const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+        const at = n.textContent.indexOf(word);
+        if (at < 0) continue;
+        const r = document.createRange();
+        r.setStart(n, at);
+        r.setEnd(n, at + word.length);
+        return r.getBoundingClientRect().left;
+      }
+      return null;
+    }, [sel, word]);
+
+    // The palette's footer, "move · Enter open · Esc close", in reading order from
+    // the left. It read "move · Enter open · Esc close" from the right. A touch
+    // screen's footer is a different sentence, with no keys in it, so the
+    // palette's half is a desktop claim.
+    if (!(await isPhone(page))) {
+      await page.keyboard.press('Control+k');
+      await expect(page.locator('.pal-foot')).toBeVisible();
+      expect(await page.locator('.pal-foot').innerText()).toMatch(/move.*open.*close/);
+      const [move, open, close] = await Promise.all(
+        ['move', 'open', 'close'].map((w) => wordLeft('.pal-foot', w)));
+      expect(move, 'the footer reads right to left').toBeLessThan(open);
+      expect(open, 'the footer reads right to left').toBeLessThan(close);
+      // The field's own hint ends with its ellipsis, at the END of the line.
+      expect(await page.evaluate(() =>
+        getComputedStyle(document.querySelector('.pal input'), '::placeholder').unicodeBidi))
+        .toBe('plaintext');
+      await page.keyboard.press('Escape');
+    }
+
+    // The shortcut sheet: a combination's chips in the order they are typed. The
+    // chips are siblings in a flex row, which the mirror reverses; keys are not
+    // language, so they are carved out of it.
+    // By the button rather than the key: a key pressed straight after the palette
+    // closes lands before focus has come back to the page.
+    await page.getByRole('button', { name: 'Keyboard shortcuts' }).first().click();
+    await expect(page.locator('.help')).toBeVisible();
+    const combo = await page.evaluate(() => {
+      const row = [...document.querySelectorAll('.help-keys')].find((k) => k.querySelectorAll('.kbd').length === 2);
+      return [...row.querySelectorAll('.kbd')].map((k) => [k.textContent, k.getBoundingClientRect().left]);
+    });
+    expect(combo.length).toBe(2);
+    expect(combo[0][1], `${combo[0][0]} ${combo[1][0]} reads backwards`).toBeLessThan(combo[1][1]);
+    await page.keyboard.press('Escape');
+  });
+
+  test('the slideshow lays an English story out left to right in an Arabic interface', async ({ page }) => {
+    await boot(page);
+    await page.getByRole('button', { name: /^Slideshow$/ }).click();
+    await expect(page.locator('.slides[data-phase="read"]')).toBeVisible({ timeout: 60_000 });
+    // The per-article rule the reading pane has: the body and the headline resolve
+    // their own direction, so English is not laid out against the wrong edge with
+    // its punctuation on the wrong side.
+    await expect(page.locator('.slide-body')).toHaveAttribute('dir', 'auto');
+    await expect(page.locator('.slide-head')).toHaveAttribute('dir', 'auto');
+    const d = await page.evaluate(() => [
+      getComputedStyle(document.querySelector('.slide-body')).direction,
+      getComputedStyle(document.querySelector('.slide-head')).direction,
+    ]);
+    expect(d).toEqual(['ltr', 'ltr']);
+    // And the counter in the slug reads "1 of 5", not "5 of 1" or "OF 5 1".
+    const order = page.locator('.slide-order');
+    await expect(order).toHaveText(/^\d+ of \d+$/);
+    expect(await order.evaluate((el) => getComputedStyle(el).unicodeBidi)).toBe('plaintext');
+    await page.keyboard.press('Escape');
+  });
+
+  // H10. Arrow keys follow the screen. In this interface the Next button is on the
+  // LEFT of the transport and Previous on the right, so the left arrow is next.
+  test('in the slideshow the arrows go where they point', async ({ page }) => {
+    await boot(page);
+    await page.getByRole('button', { name: /^Slideshow$/ }).click();
+    await expect(page.locator('.slides')).toBeVisible({ timeout: 60_000 });
+    await page.mouse.move(900, 400);
+
+    // The transport mirrors, and its two marks with it: Next is drawn on the left
+    // and its mark points left; Previous on the right, pointing right.
+    const hud = await page.evaluate(() => {
+      const at = (action) => {
+        const b = document.querySelector(`.slide-btn[data-action="${action}"]`);
+        return { left: b.getBoundingClientRect().left, flip: getComputedStyle(b.firstElementChild).transform };
+      };
+      return { prev: at('slide-prev'), next: at('slide-next') };
+    });
+    expect(hud.next.left, 'Next is not on the left of Previous').toBeLessThan(hud.prev.left);
+    expect(hud.next.flip, 'Next still points the left-to-right way').toBe('matrix(-1, 0, 0, 1, 0, 0)');
+    expect(hud.prev.flip, 'Previous still points the left-to-right way').toBe('matrix(-1, 0, 0, 1, 0, 0)');
+
+    const order = page.locator('.slide-order');
+    await expect(order).toHaveText('1 of 5');
+    await page.keyboard.press('ArrowLeft');
+    await expect(order).toHaveText('2 of 5');
+    await page.keyboard.press('ArrowRight');
+    await expect(order).toHaveText('1 of 5');
+    // j and k name the step, not a side, and are unchanged.
+    await page.keyboard.press('j');
+    await expect(order).toHaveText('2 of 5');
+    await page.keyboard.press('Escape');
+  });
+
+  // The pinned bar's Previous and Next: Previous is on the right and points right,
+  // Next on the left and points left, whichever way the document reads.
+  test('the article bar\'s Previous and Next point the way reading goes', async ({ page }) => {
+    await boot(page);
+    await page.locator('.item-row').first().click();
+    const step = page.locator('.article-step').first();
+    await expect(step).toBeVisible({ timeout: 30_000 });
+    const at = await step.evaluate((el) => {
+      const one = (label) => {
+        const b = el.querySelector(`button[aria-label="${label}"]`);
+        const g = b.querySelector('.gl') || b.firstElementChild;
+        return { left: b.getBoundingClientRect().left, glyph: g.textContent, flip: getComputedStyle(g).transform };
+      };
+      return { prev: one('Previous article'), next: one('Next article') };
+    });
+    expect(at.next.left, 'Next is not on the left').toBeLessThan(at.prev.left);
+    // Drawn mirrored: the stored mark is the left-to-right one and the transform
+    // turns it round, so what is on screen is "‹" for Next and "›" for Previous.
+    expect(at.prev.flip).toBe('matrix(-1, 0, 0, 1, 0, 0)');
+    expect(at.next.flip).toBe('matrix(-1, 0, 0, 1, 0, 0)');
+  });
+
+  test('in the sidebar the left arrow reaches the gear that is drawn on the left', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', 'a phone has no key-driven rail');
+    await boot(page);
+    // Parked off the sidebar: a pointer resting on a row reveals its gear and would
+    // move the focus ring for reasons that are not the key.
+    await page.mouse.move(900, 400);
+    const row = page.locator('.feed-slot:has(.feed-gear) .feed-row').first();
+    await row.focus();
+    const left = (loc) => loc.evaluate((el) => el.getBoundingClientRect().left);
+    const gear = page.locator('.feed-slot:has(.feed-gear) .feed-gear').first();
+    expect(await left(gear), 'the gear is not on the left of its row').toBeLessThan(await left(row) + 40);
+    await page.keyboard.press('ArrowRight');
+    expect(await page.evaluate(() => document.activeElement.className),
+      'the right arrow must not reach a gear drawn on the left').not.toMatch(/feed-gear/);
+    await row.focus();
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator('.feed-gear:focus')).toHaveCount(1);
+  });
 });

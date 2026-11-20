@@ -215,6 +215,9 @@ type kitRowProps struct {
 	Key string
 	// SlotData is the slot's own state (a category's data-open).
 	SlotData map[string]string
+	// SlotAria is the slot's own aria-* — a windowed row's aria-posinset and
+	// aria-setsize, which have to sit on the listitem. nil for every other row.
+	SlotAria map[string]string
 	// Before and After are siblings of the row inside the slot — a category's
 	// caret, a feed's gear. Beside the row and never inside it: a button inside
 	// a button is invalid, and the browser's repair moves the click somewhere
@@ -287,7 +290,7 @@ func kitRow(p kitRowProps) ui.Node {
 	if p.After != nil {
 		slot = append(slot, p.After)
 	}
-	wrap := html.Props{Class: p.Slot, Key: p.Key, Data: p.SlotData}
+	wrap := html.Props{Class: p.Slot, Key: p.Key, Data: p.SlotData, Aria: p.SlotAria}
 	if p.Item {
 		wrap.Role = "listitem"
 	}

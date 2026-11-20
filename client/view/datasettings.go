@@ -69,12 +69,20 @@ const (
 	// .opml, and one from a scripted backup may have no extension at all. The
 	// parser is what decides whether a file is a subscription list.
 	opmlAccept = ".opml,.xml,text/xml,application/xml,text/x-opml"
-	// The download's name. Plain and boring on purpose: it lands in a downloads
-	// folder beside a hundred other files, and "feeds.opml" is what somebody
-	// searching for it six months from now will type.
-	opmlFileName = "feeds.opml"
-	opmlMIME     = "text/x-opml"
+	opmlMIME   = "text/x-opml"
 )
+
+// opmlFileName is the download's name: "articleflux-feeds-2026-11-19.opml".
+//
+// It lands in a downloads folder beside a hundred other files, and a bare
+// "feeds.opml" was indistinguishable from the one the last reader app exported
+// (and a second export was saved as "feeds (1).opml"). The product and the day
+// say whose it is and which copy it is, and "feeds" and ".opml" are still the
+// words somebody searching for it six months from now will type. The reader's own
+// date, as the theme's step marker uses (today).
+func opmlFileName() string {
+	return "articleflux-feeds-" + today() + ".opml"
+}
 
 func settingsData(tr i18n.Runtime, p dataProps) []ui.Node {
 	importLabel := tr.T("data", "importPick")

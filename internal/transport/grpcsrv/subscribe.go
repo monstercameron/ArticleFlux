@@ -68,6 +68,8 @@ func (s *ReaderServer) AnalyzeSite(ctx context.Context, req *pb.AnalyzeSiteReque
 				"this server was built without site analysis")
 		case errors.Is(err, llm.ErrNotConfigured):
 			return &pb.AnalyzeSiteResponse{SmartStatus: reader.StatusNoKey}, nil
+		case feedAddError(err) != nil:
+			return nil, feedAddError(err)
 		default:
 			// A page that will not load is the reader's problem to fix — a typo,
 			// a site that is down, an address behind a login — so it is

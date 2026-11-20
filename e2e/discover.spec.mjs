@@ -126,6 +126,115 @@ test.describe('discover', () => {
     await expect(page.locator('.discover-empty')).toBeVisible();
   });
 
+  // --- Not for me, and the way back (G26) -------------------------------------
+  //
+  // The harness has no model key and no outlink evidence, so the real scoring
+  // pass never makes a card. /debug/seed-recommendations (DevMode only, beside
+  // reset-state) writes open suggestions straight into the account, which is what
+  // lets the card interactions below run in a browser against the real server.
+  // Dismissals are permanent and survive reset-state, so every test names its own
+  // domains; the open ones are withdrawn again afterwards so no later spec sees
+  // them.
+  const unique = () => Math.random().toString(36).slice(2, 8);
+  const seed = (page, baseURL, domains) =>
+    page.request.post(`${baseURL}/debug/seed-recommendations?` +
+      domains.map((d) => `d=${encodeURIComponent(d)}`).join('&'));
+  const card = (page, domain) => page.locator('.discover-card', { hasText: domain });
+  const banner = (page) => page.locator('#discover-page .banner');
+
+  test.describe('Not for me', () => {
+    test.afterEach(async ({ page, baseURL }) => {
+      await seed(page, baseURL, []);
+    });
+
+    // The server was never told, which is the whole of what Undo is: a reload
+    // after it shows the card still offered.
+    test('can be taken back, and the card returns where it was', async ({ page, baseURL }) => {
+      const a = `a-${unique()}.example`, b = `b-${unique()}.example`, c = `c-${unique()}.example`;
+      await boot(page);
+      await seed(page, baseURL, [a, b, c]);
+      await openDiscoverOptedIn(page);
+      await expect(page.locator('.discover-card')).toHaveCount(3);
+
+      await card(page, b).locator('.discover-reject').click();
+      await expect(card(page, b)).toHaveCount(0);
+      await expect(page.locator('.discover-card')).toHaveCount(2);
+      await expect(banner(page)).toContainText('Dismissed');
+      await expect(banner(page)).toContainText(b);
+
+      await banner(page).locator('[data-discover-undo]').click();
+      await expect(page.locator('.discover-card')).toHaveCount(3);
+      // In place: the middle of the three, not the end of the list.
+      await expect(page.locator('.discover-card-domain').nth(1)).toContainText(b);
+      await expect(banner(page)).toHaveCount(0);
+      await expect(page.locator('.discover-said')).toContainText('back');
+      // The Undo that was pressed is gone; focus went to the card it brought back.
+      await expect.poll(() => page.evaluate(() => document.activeElement?.dataset?.role ?? ''))
+        .toBe(`rec-follow-${b}`);
+
+      await page.reload();
+      await expect(page.locator('.discover-card')).toHaveCount(3, { timeout: 30_000 });
+    });
+
+    test('is sent when the window runs out, and survives a reload', async ({ page, baseURL }) => {
+      const a = `a-${unique()}.example`, b = `b-${unique()}.example`;
+      await boot(page);
+      await seed(page, baseURL, [a, b]);
+      await openDiscoverOptedIn(page);
+      await card(page, a).locator('.discover-reject').click();
+      await expect(banner(page)).toBeVisible();
+      // Ten seconds of Undo, then the banner leaves and the server has the answer.
+      await expect(banner(page)).toHaveCount(0, { timeout: 20_000 });
+      await expect(page.locator('.discover-card')).toHaveCount(1);
+
+      await page.reload();
+      await expect(page.locator('.discover-card')).toHaveCount(1, { timeout: 30_000 });
+      await expect(card(page, a)).toHaveCount(0);
+      await expect(card(page, b)).toHaveCount(1);
+    });
+
+    test('is sent at once on leaving the tab, not lost with the timer', async ({ page, baseURL }) => {
+      const a = `a-${unique()}.example`;
+      await boot(page);
+      await seed(page, baseURL, [a]);
+      await openDiscoverOptedIn(page);
+      await card(page, a).locator('.discover-reject').click();
+      await expect(banner(page)).toBeVisible();
+
+      await page.locator('[data-action="settings-tab"][data-value="appearance"]').click();
+      await expect(page.locator('#discover-page')).toHaveCount(0);
+      // The RPC leaves from the unmount; give it its round trip.
+      await page.waitForTimeout(1500);
+      await page.reload();
+      await page.locator('[data-action="settings-tab"][data-value="discover"]').click();
+      await expect(page.locator('.discover-empty')).toBeVisible({ timeout: 30_000 });
+      await expect(card(page, a)).toHaveCount(0);
+    });
+
+    // Only the latest dismissal can be taken back: the one before it is final.
+    test('dismissing a second card makes the first final', async ({ page, baseURL }) => {
+      const a = `a-${unique()}.example`, b = `b-${unique()}.example`;
+      await boot(page);
+      await seed(page, baseURL, [a, b]);
+      await openDiscoverOptedIn(page);
+      await card(page, a).locator('.discover-reject').click();
+      await expect(card(page, a)).toHaveCount(0);
+      await card(page, b).locator('.discover-reject').click();
+      await expect(page.locator('.discover-card')).toHaveCount(0);
+      await expect(banner(page)).toContainText(b);
+
+      await banner(page).locator('[data-discover-undo]').click();
+      await expect(page.locator('.discover-card')).toHaveCount(1);
+      await expect(card(page, b)).toHaveCount(1);
+
+      await page.waitForTimeout(1500);
+      await page.reload();
+      await expect(page.locator('.discover-card')).toHaveCount(1, { timeout: 30_000 });
+      await expect(card(page, a)).toHaveCount(0);
+      await expect(card(page, b)).toHaveCount(1);
+    });
+  });
+
   test('screenshot: legibility check', async ({ page }) => {
     await openDiscoverOptedIn(page);
     await expect(page.locator('.discover-empty')).toBeVisible();

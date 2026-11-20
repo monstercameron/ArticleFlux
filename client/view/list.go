@@ -1313,6 +1313,8 @@ func itemRowAttrs(it *pb.Item, spawn int) map[string]any {
 		props = map[string]any{}
 	}
 	props["data-item-id"] = it.GetId()
+	// Not a Tab stop of its own: the list is one (reader_listeners.go, H11).
+	props["tabindex"] = "-1"
 	if spawn >= 0 {
 		// Appended to the hue's style string rather than set through Props.Style:
 		// GWC's style MAP cannot carry custom properties at all (see hueVarFor),
@@ -1334,6 +1336,8 @@ func missingKey(sel scope) string {
 		return "emptyMissingTag"
 	case sel.FolderID != "":
 		return "emptyMissingFolder"
+	case sel.CategorySlug != "":
+		return "emptyMissingTopic"
 	}
 	return "emptyMissingFeed"
 }

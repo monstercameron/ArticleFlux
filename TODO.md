@@ -531,13 +531,22 @@ click, infinite scroll working (60 → 120 → 180), and the list stable while i
 guards. They were only findable by driving a browser against a realistic amount of data. A 5-item
 fixture would never have surfaced any of them.
 
-**Still owed from the second audit (G1): the rail at 2,000+ feeds.** A 3,000-row OPML now imports in
-about a second and reports (it used to run for minutes and lose its report), but the rail draws every
-feed row and every gear button into the DOM — 2,085 gear buttons in the audit's screenshot — and the
-first paint after boot was ~33 s with that many. The list is virtualised (see "Reading at firehose
-scale"); the rail is not. Virtualise it, or window it behind the folders, before anyone imports a file
-that size on purpose. The 33 s was measured while the import was still holding the write lock, so
-re-measure first: some of it may have been the import and not the rail.
+**The rail at 2,000+ feeds (the second audit's G1) — measured, then windowed (2026-11-20).** The audit's
+"~33 s to first paint" was taken while an import still held the write lock, so it was measured again on
+an idle instance — 2,000 feeds in 40 folders, 300 with unread — and the rail *was* the cost: 17,300
+DOM nodes (2,033 rows, 2,000 gears), 27 s to the first article row against 14 s with a dozen feeds
+(about 9 s of both is the uncompressed wasm), and 12 s to unfold the Feeds section again. The feed-list
+RPC and the list pane's first render were the same at both sizes; `RovingSync` is two `querySelector`
+calls (0.002 ms at that size). What the numbers blamed was the rail rendering every row, so a long run
+of feeds is now a **virtual window** (`client/view/rail_window.go`, `platform.RailWindow`): 1,400 nodes,
+12 s to the first row, 0.7 s to unfold. The before/after table is in CHANGELOG.md, Unreleased. Arrow keys
+reach rows outside the window by scrolling and then focusing them (`platform.RailReach`).
+
+What is still true and unmeasured/undone: the window is per run and starts at 200 feeds, so opening every
+one of forty 50-feed folders still renders 2,000 nested rows; nothing scrolls the rail to the current feed
+when it is outside the window; and the numbers are one machine under load (three runs each), not a lab.
+The scale scripts are throwaway by design — the e2e suite shares one account across every spec, and a
+test that creates thousands of feeds slows everything after it (a 450-feed one did).
 
 ---
 
@@ -3893,7 +3902,7 @@ minimum: purge SW cache and hard reload, §22.10) · **the offline screen** (tun
 > evaluation is written out at the top of `client/view/route.go`. Instead the address is derived from
 > state and applied back to it.
 >
-> Addressed today: the streams, `/feed/<id>`, `/tag/<id>`, `/category/<id>`, `/search?q=`,
+> Addressed today: the streams, `/feed/<id>`, `/tag/<id>`, `/category/<id>`, `/topic/<slug>`, `/search?q=`,
 > `<place>/read/<itemID>`, `/settings/<tab>`, and the four dialogs. `/login` is deliberately not one —
 > an address for a screen that exists only while you are signed out is an address that redirects.
 > `/recover`, `/enroll/:token` and `/setup` have no counterpart at all — `articleflux init` is a shell
@@ -8622,3 +8631,23 @@ pass did not have.
       *Done when: it is fixed upstream (drain over a snapshot, or defer the truncation while
       draining) and the pin is moved; the reduction is a parent whose effect Sets a changed value in
       the commit that mounts a child with a mount effect.*
+
+## Left open by the 1.3.2 audits (2026-11-20)
+
+- [ ] **A publisher's own `<h1>` inside an article body is still a level-1 heading.** The reader
+      page now has one real level 1 and article titles announce at level 2 (G27), but
+      `internal/sanitize` passes `h1`–`h6` in bodies through unchanged, and GWC's `RawHTML`
+      allowlist drops `aria-level`, so it cannot be patched on the way to the screen. The fix
+      is a demotion in the sanitiser (body headings shifted down two levels, clamped at h6)
+      with the article-body heading CSS re-keyed to match so nothing changes size — and a
+      decision about bodies already stored. *Done when: a body with an `<h1>` exposes no
+      second level-1 heading in the accessibility tree, old articles included.*
+- [ ] **Open every folder at once and the sidebar still draws every feed.** The window is per
+      run of feeds (the flat list, or one open folder of 200+); forty open folders of fifty
+      are 2,000 nested rows again. Nothing scrolls the sidebar to the current feed either,
+      before or after the window. *Done when: the window spans the whole scroller.*
+- [ ] **Not verified in a browser:** the private-address and keyless-server add-a-feed messages
+      (the e2e server is `-dev`; the mapping has Go tests), Home/End on the resize grips, Enter
+      in the Smart+ key field, the palette's focus ring, the settings tabs at 320px, and a
+      Settings tab other than Server opened while offline.
+

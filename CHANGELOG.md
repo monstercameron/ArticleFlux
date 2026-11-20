@@ -9,6 +9,213 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-11-20
+
+### Changed — 2026-11-20, the bundle's baseline moves, on purpose
+
+- `wasm-baseline.txt` goes from 32,870,885 to 34,658,207 bytes. The ratchet exists so that this
+  is a decision and not a drift, so here is the decision. The old figure was recorded in
+  August, before GoWebComponents v7, the translated interface, the ranking that reads
+  behaviour, and three audits' worth of things a reader can now do with a keyboard. 1.3.1 was
+  75 KB under the ceiling after giving back 78 KB (the address parser); this release adds
+  about 220 KB that is all behaviour somebody asked for — the windowed sidebar (36 KB), undo
+  for a dismissed suggestion (43 KB), playback that waits for the article it is about to read,
+  the roving lists, the feed errors that say what the server saw — and each fixer trimmed its
+  own share first. What is left to cut is features. The ceiling is 5% above the new figure,
+  as before.
+
+### Fixed — 2026-11-20, adding a feed, links, the first click, one Tab stop, addresses and focus (the third audit's H4, H5, H6, H8, H11–H16, H18–H21, H23–H26)
+
+- **The first mouse click after loading `/settings/<tab>` is no longer dropped (H6).** Settings takes
+  focus on its pane when it opens, and `:focus-visible` matches a programmatic focus until the first
+  pointer press — which is every load by address. The global focus-ring rule swapped the pane's
+  `animation` for the ring, and the instant focus left the pane (the press itself) the animation
+  swapped back, so the whole pane replayed its entrance — a 4% jump and a fade — between the press and
+  the release, the release landed on the neighbouring element, and no click happened. The pane now
+  names its own animation under `:focus-visible`, so nothing restarts. New spec `e2e/firstclick.spec.mjs`.
+- **A link in an article opens in a new tab with `rel="noopener noreferrer"` (H4).** GWC rebuilds a
+  body through its own sanitiser, which drops the `target` and `rel` the server's wrote, and bodies
+  stored before that rule never had them — so a click navigated the app's own tab away and coming back
+  re-booted the wasm. One document-level click listener (`platform.OnExternalLinks`) now writes both
+  onto any `http(s)` link to another origin as it is clicked, so it holds for the reading pane, the
+  slideshow, translations and summaries alike, and for text already in the database.
+- **An address that does not yield a feed is refused when it is added (H5, H8).** A 404 was subscribed
+  and reported "Added …"; the rail grew a row named after its address and the reason was visible only in
+  Feed settings → Health. Now a new subscription whose first fetch fails is rolled back and the dialog
+  says what the server saw, each in its own catalog key (`srv.feedHTTP` "…answered HTTP 404…",
+  `feedUnreachable`, `feedTimeout`, `feedBroken`, `feedNotAFeed`, `feedPrivate`, `feedScheme`,
+  `feedTooLarge`, `feedBadURL`). A feed that opens like one and is malformed says so (`feed.ErrBrokenFeed`)
+  instead of "this page doesn't publish one"; text that is not an address is refused in the dialog before
+  any call; a private address says private addresses are refused. The ladder's "No feed here" no longer
+  appears beside an error that already says why (and is a live region when it does); the address field
+  gets `aria-invalid` and focus. A reader who already follows an address never loses it to a failed
+  re-add, and OPML import still subscribes without fetching.
+- **A slow first `WhoAmI` no longer shows the sign-in screen (H15).** Every error sent the reader to
+  login. Only an authentication answer does now; a transport error, a timeout or a cancellation keeps the
+  splash and asks again.
+- **The article list is one Tab stop (H11),** like the sidebar: every row is `tabindex="-1"` and the
+  current row (or the first rendered one, when the current is outside the virtual window) is the stop.
+- **Topics have addresses (H12):** `/topic/<slug>` and `/topic/uncategorised`, with the slideshow and
+  article suffixes, and "That topic isn't here" for a slug the taxonomy does not have.
+- **Focus lands somewhere real (H13, H14, H23, H24, H25).** Leaving the slideshow, an add that closes
+  its dialog, an unsubscribe (the sidebar's stop takes it when the gear is gone) and the recovery-codes
+  screen (the Copy button). The tag symbol picker is one Tab stop with an arrow-key grid (Home/End
+  too — and a dialog's Tab trap no longer walks `tabindex="-1"` controls, which had kept it at fifty-one); the resize grips take Home and End and carry `aria-valuemin`/`aria-valuemax` from one table
+  (`platform.PaneLimits`); Enter in the Smart+ key field saves; the command palette's input shows a
+  focus ring.
+- **Smaller:** a Settings tab opened offline says it will fill in when the connection is back instead of
+  drawing bars (H16); on a phone choosing a tab brings its panel to the top (H18); the rail's topic rows
+  wait until something is filed under one (H19); an empty instance's article pane no longer says
+  "j and k move through the list" (H20); "by by name" (H21); the sign-in, recovery and setup forms no
+  longer carry an inline `onsubmit` the page's CSP refuses (H26).
+
+### Fixed — 2026-11-20, Listening: Keep playing, the speed and the headline (the third audit's H1, H2, H3, H17, H22)
+
+- **Keep playing with the browser's voice no longer loses its place.** `SpeakElement` answered "idle"
+  — the word for *finished* — when the next article was not in the page yet and when it had no text,
+  and `startPlayback` took every "idle" for the end of the track, so a list could be "played" in a third
+  of a second (and marked read) without a word spoken, or stop after one article when the next body was
+  still loading. The four things that one word stood for are now told apart (`playbackStep`, a table
+  test): only *finished* advances; *not drawn yet* waits for the body (asking again every 150 ms, up to
+  15 s, then says so and moves on); *nothing to read* is announced. The platform reports what it found
+  (`SpeakStarted`, `SpeakAbsent`, `SpeakEmpty`) and a loading or failed placeholder is not mistaken for
+  an article.
+- **A picture-only article is announced, not skipped.** xkcd used to run through four comics in silence
+  with Keep playing on, and with it off Listen did nothing and said nothing. The voice now says the
+  headline and that there is no text to read in it, the same sentence is shown, and it counts as
+  played. Reaching the end says "That's the end of the list".
+- **The rail's unread counts stop collapsing under Keep playing.** `markRead` asked the copy of the item
+  it was handed whether it was already read, and the stream, the opened body and the queue each hold
+  their own copy that the flip never updated — so opening an article, scrolling into it and hearing it
+  out each took the count down: three a story (35 shown, 26 true, after nine). It now asks the list, and
+  updates the other copies as it flips (and puts them back when the server refuses).
+- **The reader's speed reaches the browser voice.** Every utterance was created at rate 1 and only the
+  Smart+ `<audio>` element ever heard the Reading speed setting. Each sentence now takes the speed when
+  it is handed to the engine, one sentence ahead of the one being spoken, so a change made mid-article
+  takes hold within a sentence or two.
+- **The browser voice says the headline.** Before the body: "*Title. From Source.*" — in a run of
+  short articles it is the only thing that says which story is on.
+- **No more flash of the floating now-playing bar at a hand-over.** It showed for a frame while the
+  observer's first report about the new article's bar (taken before the pane had travelled to it) was
+  believed. The hand-over starts from "its bar is in view", and an "off screen" report during the
+  travel to the playing article is ignored. New spec: `e2e/keepplaying.spec.mjs`.
+
+### Fixed — 2026-11-20, the slideshow and right-to-left (the third audit's H7, H9, H10)
+
+- **The slideshow no longer scrolls a story that fits.** A 474px comic on a 915px phone moved 214px up
+  under its header; a short Rust Blog post lost its first paragraph under the headline. The travel was
+  measured once, while the title card was still rising, against a stage a fraction of its final height,
+  and counted the room left under the last paragraph as if it were text. It is now measured from the
+  content's layout height (a transform cannot shorten it) on every tick of the reading phase, so a late
+  picture, a font swap or a resize is picked up, and a story whose text fits holds still. A story that
+  does not fit starts below the header and ends above the foot. (`platform.ScrollOverflow`,
+  `slideMeasure`.)
+- **Right-to-left, with the words still English, reads right.** Pick Arabic without a Smart+ key and
+  every string is the English fallback inside a mirrored layout: ".Everything this reader does…",
+  "+Smart", "item · the page links to it 1", "OF 10 2", "K Ctrl". While any of an RTL locale's catalog
+  is English the root now carries `data-fallback` and every run of text takes its direction from its own
+  letters (`unicode-bidi: plaintext`, `design/bidi.go`) — one rule rather than a list, with the layout
+  still mirrored; key chips keep their order in every language; a finished translation switches it off.
+  The slideshow's headline and body get the per-article direction the reading pane has had since the
+  first audit.
+- **Arrow keys follow the screen in a right-to-left interface.** In the slideshow `←` is Next when Next
+  is the button on the left, and its Previous/Next marks now point the way reading goes
+  (`slideArrowStep`; `j`/`k` are unchanged — they name the step, not a side). The sidebar's `← →`
+  (`platform.RailMove` reads the row's computed direction) and the article bar's Previous/Next marks
+  were already right and are now pinned by `rtl.spec.mjs` so they stay so.
+
+### Fixed — 2026-11-20, the sidebar at 2,000 subscriptions (G1's leftover)
+
+- **With about 2,000 feeds the reader took 27 seconds to its first article row and the sidebar was
+  17,000 DOM nodes; it is now 12 s and 1,400, the same as a dozen feeds.** The second audit measured
+  ~33 s while an import still held the database, so this was measured again on an idle instance
+  (2,000 feeds in 40 folders, 300 of them with unread articles; median of three runs, 1440 px
+  desktop, a busy laptop so read the ±30 % in; the wasm served uncompressed, which is ~9 s of every
+  number, boot included, at any size):
+
+  | | 12 feeds | 2,000 feeds before | 2,000 feeds after |
+  |---|---|---|---|
+  | navigation → first article row | 14.3 s → 11.3 s | 26.8 s | 12.0 s |
+  | DOM nodes · in the sidebar · feed rows · gears | 1,032 · 286 · 45 · 12 | 17,302 · 16,478 · 2,033 · 2,000 | 1,422 · 636 · 89 · 56 |
+  | unfold the Feeds section (longest long task) | 0.67 s → 0.42 s | 12.2 s (542 ms) | 0.73 s (115 ms) |
+  | fold it | 0.62 s → 0.26 s | 0.67 s | 0.32 s |
+  | `j` to paint | 408 → 423 ms | 675 ms | 477 ms |
+  | select another feed | 376 → 410 ms | 544 ms | 433 ms |
+  | open · close Settings | 484 · 167 → 359 · 167 ms | 845 · 330 ms | 879 · 200 ms |
+
+  At 412 px (the rail is its own pane) the same instance went 27.0 s → 11.7 s to the first row, 17,251
+  → 1,344 nodes, 8.0 s → 0.46 s to unfold Feeds and 623 → 340 ms to select a feed. The 12-feed rows
+  are within the run-to-run noise of each other, which is the point: nothing about the common case
+  changed.
+
+  Nothing else was the cost. The feed-list RPC is the same call at both sizes and the list pane's own
+  first render is the 12-feed figure; the time was the rail rendering and re-rendering two thousand
+  rows (and as many gears) every time its data arrived or changed. `RovingSync`, which the audit
+  suspected, is two `querySelector` calls and costs 0.002 ms at 17,000 nodes; what the keyboard paid
+  for the size was `MoveFocus` enumerating every row (2,036 of them) across the wasm boundary on each
+  arrow press, which is now ~90.
+  Counted with an instrumented build, the rail does not re-render at all for a list scroll, an article
+  scroll, `k`, or opening and closing Settings, and `j` re-renders it once or twice and one or two rows (the unread counts that moved), so the memo
+  bail-out was already doing its job — the rows were the problem, not the renders.
+- **A long run of feeds is now a window.** From 200 feeds up the flat Feeds list (and an open folder
+  that long) draws the rows near the viewport, 24 either side, between two spacers sized for the rest —
+  the article list's idea, with the difference that the rail's scroller holds other things too, so the
+  position is read from it (`platform.RailWindow`) and the rail keeps it in state of its own: scrolling
+  the sidebar re-renders the sidebar, once per eight rows, and nothing above it. Rows are exactly 29 px
+  apart by design (`design.RailRowPitch`, held to the stylesheet by a test), so the window is arithmetic
+  and no row is measured. Section folds, the folder bands and carets, the per-row gear, unread counts,
+  the current-row highlight, the folded rail's slide-out, right-to-left and the phone layout are
+  untouched; below 200 feeds the markup is byte-for-byte what it was (no golden changed). Each windowed
+  row says where it is (`aria-posinset` / `aria-setsize`), so a screen reader hears "1,204 of 2,000".
+- **The arrow keys still reach every feed.** At the edge of the rendered rows `↓` / `↑` scroll to the
+  next one, wait for it to render and focus it (`platform.RailReach`) — without that, "next row" from
+  the last rendered feed was the first row of the next section, past nineteen hundred others. Checked
+  in a browser by holding `↓` through 120 rows and by pressing it from the first and last rendered row
+  of a window at row 1,000. The sidebar is still one Tab stop.
+- Not done: the window is per run, so opening every one of forty 50-feed folders still draws all 2,000
+  nested rows (each is under the 200-row line). The current feed is not scrolled to when it is outside
+  the window — as before, nothing scrolled the rail to it. The shipped wasm grew by 35.8 KB (34,439,331
+  → 34,475,113 bytes: a clean `HEAD` against `HEAD` plus this change alone).
+
+### Fixed — 2026-11-20, the last of the second audit: a way back from Not for me, and the polish list
+
+- **"Not for me" on Discover had no way back (G26).** It was permanent and immediate. It is still
+  permanent, but the card now leaves at once and a banner — the one Mark all read's receipt uses, with
+  the same *Undo* — offers ten seconds to take it back; the card returns in its place with focus on its
+  Follow button. The dismissal is only sent to the server when that window runs out, so Undo needed no
+  new RPC. It is sent at once if you leave the tab, background or close the page, press Refresh, switch
+  review off or dismiss another card (only the latest can be undone), and if the server refuses it the
+  card comes back with a sentence saying so. A request started as the page closes is not guaranteed to
+  leave; when it does not, the card is suggested again next time, never dismissed unasked. Follow already
+  showed *Following…* and said *Following X.*; both kept.
+- **The focus button no longer sits against the pinned action bar on a phone (G22).** The bar stopped
+  4px short of the button, so a chip cut at the bar's edge ("Read lat|") ended against it and read as
+  running underneath. The bar now leaves 12px, at 412 and 320, in both directions and in focus mode.
+- **Attune read "About 0% of the way to a room built around your Rustup · Rust · Rust 1 reading."** At
+  nothing it now says it is setting out, one small step a day, and the topic is named by two distinct
+  terms ("Rustup · Rust") rather than a stem and its versions.
+- **The "rust" chip in Tag settings had its text riding high on a phone.** Static chips now centre their
+  text in the height a finger-sized chip is given.
+- **A collapsed note's preview was cut at twelve characters** ("Before outag…") with most of the row
+  empty. The row's own width now decides where it ends.
+- **A row's reading time was cut mid-word ("11 min re…") while the source name still held three
+  characters.** The source now gives way entirely first; the coloured mark still says whose it is.
+- **The OPML export was named `feeds.opml`.** It is `articleflux-feeds-<date>.opml`.
+- **Settings → Listening said "always available" on a browser with no speech voice.** After the voice
+  list has had a few seconds to load, a browser with none (or no synthesiser) says so plainly, that
+  Read aloud will be silent, and what to do instead.
+
+### Fixed — 2026-11-19, the reader's heading outline (G27)
+
+- **Moving by headings, the reader's outline ran 2, 1, 1, 1.** The list pane's title (the scope, "Rust
+  Blog") is an `<h2>` and came before the first article's `<h1>`, and every article in the stream is an
+  `<h1>` of its own, so a page could hold six level-1s after a level 2 and no heading that named the page.
+  The reader now has one real level 1 — "ArticleFlux — Rust Blog", visually hidden, first in the page, and
+  following the scope as it changes. The list's title stays the level 2 it was, and each article's title
+  keeps its `<h1>` element (the styles and tests hang from it) but announces as level 2. Settings keeps its
+  own level 1, and the reader's steps out of the way while Settings is open so there are never two.
+  Headings inside an article's own body are the publisher's and unchanged.
+
 ## [1.3.1] — 2026-11-19
 
 ### Changed — 2026-11-19, the browser no longer carries an address parser

@@ -77,7 +77,10 @@ const (
 )
 
 type smartProps struct {
-	cfg *pb.GetSmartConfigResponse
+	// conn is the connection's state, which decides whether a pending load shows
+	// its skeleton or says it is waiting (settingsLoading).
+	conn data.ConnState
+	cfg  *pb.GetSmartConfigResponse
 	// languages is what the server offers, with `cached` already resolved, so
 	// the chips can say which switches are free before one is pressed.
 	languages []*pb.SmartLanguage
@@ -215,12 +218,12 @@ func settingsSmart(tr i18n.Runtime, p smartProps) []ui.Node {
 	// failed to load for any other reason still sees the error below.
 	if !p.owner && p.cfg == nil {
 		if p.loading && len(p.languages) == 0 {
-			return kitSkLines("set-sk-", 0, 6, "sk-w-90")
+			return settingsLoading(tr, p.conn)
 		}
 		return settingsSmartMember(tr, p)
 	}
 	if p.loading && p.cfg == nil {
-		return kitSkLines("set-sk-", 0, 6, "sk-w-90")
+		return settingsLoading(tr, p.conn)
 	}
 	if p.err != "" && p.cfg == nil {
 		return []ui.Node{kitAlert("fs-error", p.err)}

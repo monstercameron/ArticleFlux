@@ -105,7 +105,7 @@ func (s *Service) AnalyzeSite(ctx context.Context, sc store.Scope, rawURL string
 	}
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" || urlnorm.Host(rawURL) == "" {
-		return nil, fmt.Errorf("reader: %q is not a URL", rawURL)
+		return nil, fmt.Errorf("%w: %q", ErrBadURL, rawURL)
 	}
 
 	page, feeds, err := s.pages.Feeds(ctx, rawURL)

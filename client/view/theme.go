@@ -781,11 +781,17 @@ func attuneSection(tr i18n.Runtime, p settingsProps) []ui.Node {
 			html.Text(tr.T("appearance", "attuneNothingYet"))))
 	case a.arrived():
 		out = append(out, html.Div(html.Props{Class: "set-note"},
-			html.Text(tr.T("appearance", "attuneArrived", i18n.Args{"why": a.Why}))))
+			html.Text(tr.T("appearance", "attuneArrived", i18n.Args{"why": attuneWhy(a.Why)}))))
+	case a.driftPercent() == 0:
+		// Nought is a fact about the walk, and "About 0% of the way" is a sentence
+		// about a measurement nobody took: the target is chosen and the first step
+		// is still to come.
+		out = append(out, html.Div(html.Props{Class: "set-note"},
+			html.Text(tr.T("appearance", "attuneStarting", i18n.Args{"why": attuneWhy(a.Why)}))))
 	default:
 		out = append(out, html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("appearance", "attuneProgress",
-				i18n.Args{"why": a.Why, "percent": a.driftPercent()}))))
+				i18n.Args{"why": attuneWhy(a.Why), "percent": a.driftPercent()}))))
 	}
 
 	out = append(out,
@@ -805,6 +811,44 @@ func attuneSection(tr i18n.Runtime, p settingsProps) []ui.Node {
 			html.Text(driftSourceNote(tr, a.BySmart))))
 	}
 	return out
+}
+
+// attuneWhy is the topic the drift follows, as a phrase for the sentence.
+//
+// The stored name is the topic's label — its heaviest terms, joined with a middle
+// dot — and a topic built from articles about one language produces terms that
+// are stems and versions of each other ("Rustup · Rust · Rust 1"). Read aloud
+// inside a sentence that is noise, and the third is the second with a number on
+// it. So: a term that begins with an earlier one plus a space is dropped, repeats
+// are dropped, and two terms are enough to say what it is following.
+func attuneWhy(why string) string {
+	parts := strings.Split(why, " · ")
+	out := make([]string, 0, 2)
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		dup := false
+		for _, q := range out {
+			lp, lq := strings.ToLower(p), strings.ToLower(q)
+			if lp == lq || strings.HasPrefix(lp, lq+" ") {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		out = append(out, p)
+		if len(out) == 2 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return why
+	}
+	return strings.Join(out, " · ")
 }
 
 // driftSourceNote says whether a model wrote the room or the arithmetic did.

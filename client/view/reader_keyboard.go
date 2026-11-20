@@ -194,6 +194,11 @@ func (r keyboardMap) wire() {
 					ui.PostAsync(func() { r.act.Get().addFeed() })
 				case "category-name":
 					ui.PostAsync(func() { r.act.Get().saveCategory() })
+				case "smart-key":
+					// Enter saves the key, the same as the Save beside it (H24). The
+					// draft is the component's own state by the time the next frame
+					// runs, so this reads no DOM.
+					ui.PostAsync(func() { r.act.Get().saveSmartKey() })
 				case "feed-title":
 					// Enter commits the rename. An empty value is meaningful —
 					// it clears the override and goes back to the publisher's
@@ -249,10 +254,18 @@ func (r keyboardMap) wire() {
 					// anyone has ever used. It is the one binding here nobody
 					// needs to be taught.
 					ui.PostAsync(func() { r.act.Get().slidePause() })
-				case "ArrowRight", "j", "n":
+				case "j", "n":
 					ui.PostAsync(func() { r.act.Get().slideStep(1) })
-				case "ArrowLeft", "k", "p":
+				case "k", "p":
 					ui.PostAsync(func() { r.act.Get().slideStep(-1) })
+				case "ArrowRight", "ArrowLeft":
+					// The arrows are directions on the SCREEN, not "later" and
+					// "earlier": the Next button is on the left of a
+					// right-to-left interface, and pressing → toward a button
+					// that is on the left went the wrong way. j and k stay
+					// what they are — they name the step, not a side.
+					step := slideArrowStep(k.Name, platform.RootAttr("dir") == "rtl")
+					ui.PostAsync(func() { r.act.Get().slideStep(step) })
 				case "v":
 					// v for voice. `l` is Like everywhere else in this
 					// application, and a key that means one thing in the reader
@@ -386,6 +399,34 @@ func (r keyboardMap) wire() {
 				})
 				platform.Blur()
 				return
+			}
+
+			// The tag symbol picker is a grid with one Tab stop (H14): the arrows move
+			// across and down it by where the cells are drawn, Home and End go to the
+			// ends. Only when focus actually moved, so an arrow at the edge is still
+			// the dialog's to scroll.
+			if platform.FocusedIn(".ts-glyphs") {
+				dx, dy := 0, 0
+				switch k.Name {
+				case "ArrowLeft":
+					dx = -1
+				case "ArrowRight":
+					dx = 1
+				case "Home":
+					dx = -1 << 20
+				case "End":
+					dx = 1 << 20
+				case "ArrowUp":
+					dy = -1
+				case "ArrowDown":
+					dy = 1
+				}
+				if (dx != 0 || dy != 0) && platform.GridMove(".ts-glyphs", ".ts-glyph", dx, dy) {
+					preventKey(k)
+				}
+				if dx != 0 || dy != 0 {
+					return
+				}
 			}
 
 			// Left and right inside the sidebar step across a row's own controls:

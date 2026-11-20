@@ -86,6 +86,23 @@ export default async function globalSetup() {
 <html><head><title>Alpha, the blog</title>
 <link rel="alternate" type="application/rss+xml" href="/alpha.xml"></head>
 <body><h1>Alpha</h1><p>The feed is declared in the head.</p></body></html>`)],
+    // A feed that opens like one and is not well-formed (H8): the server must say
+    // a feed IS here and is broken, not that the page publishes none.
+    '/broken.xml': ['application/rss+xml', Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Broken feed</title>
+<item><title>Unclosed <b>tag</title><link>http://example.invalid/x</link>
+<description>oops & not escaped
+</channel>`)],
+    // One article whose body links off the site (H4). Subscribed to only by the
+    // spec that needs it, and unsubscribed again.
+    '/with-links.xml': ['application/rss+xml', Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
+<title>Links Probe</title><link>https://links.example</link><description>fixture</description>
+<item><title>A story that points elsewhere</title><link>https://links.example/story</link>
+<guid isPermaLink="false">links-1</guid><pubDate>Sun, 26 Jul 2026 12:00:00 +0000</pubDate>
+<description>It links out.</description>
+<content:encoded><![CDATA[<p>Read <a id="outside" href="https://elsewhere.example/page">the other site</a> for more.</p>]]></content:encoded>
+</item></channel></rss>`)],
     '/nofeed.html': ['text/html; charset=utf-8', Buffer.from(`<!doctype html>
 <html><head><title>Quiet Notes</title></head><body>
 <main>

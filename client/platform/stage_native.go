@@ -46,7 +46,7 @@ func SetVar(selector, name, value string) {}
 // also the value that means "this slide does not need to scroll", which keeps a
 // native test of the paging logic on the simpler of the two paths rather than on
 // a fictional one.
-func ScrollOverflow(selector string) float64 { return 0 }
+func ScrollOverflow(boxSel, contentSel, trailSel string) float64 { return 0 }
 
 func Px(v float64) string {
 	return strconv.FormatFloat(v, 'f', 1, 64) + "px"

@@ -1,4 +1,4 @@
-import { test, expect, boot, openNote, openRail, openRow, isPhone, storeFakeKey } from './fixtures.mjs';
+import { test, expect, boot, openNote, openRail, openRow, openStream, openSettings, isPhone, storeFakeKey } from './fixtures.mjs';
 
 /**
  * The second UX audit's client-side fixes (G3-G6, G10, G11, G14, G15, G19-G24),
@@ -442,6 +442,79 @@ test.describe('the voice notice (G24)', () => {
     const said = await banner.innerText({ timeout: 5_000 }).catch(() => '');
     test.skip(!/speech|voice/i.test(said), 'this browser took the listen without a notice');
     await page.keyboard.press('Escape');
-    await expect(page.locator('.pane-list .banner')).toHaveCount(0);
+    // The words, not the element: the list's banners live in slots that stay in
+    // the DOM closed, so there are always two `.banner` elements and a count of
+    // none was a test that could only pass by being skipped — which it was,
+    // until Listen started raising its notice in this browser.
+    await expect(banner).not.toContainText(/speech|voice/i);
+  });
+});
+
+/**
+ * outline reads the heading outline the way a screen reader's heading list gets
+ * it: Chromium's own accessibility tree, over CDP. display:none stays out,
+ * clip-path stays in, and an aria-level IS the level. Not Playwright's
+ * ariaSnapshot, which derives a heading's level from its tag and so reports
+ * <h1 aria-level="2"> as level 1 -- the opposite of what a browser exposes.
+ */
+async function outline(page) {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { nodes } = await cdp.send('Accessibility.getFullAXTree');
+    return nodes
+      .filter((n) => !n.ignored && n.role?.value === 'heading')
+      .map((n) => ({
+        name: String(n.name?.value ?? '').trim(),
+        level: Number(n.properties?.find((p) => p.name === 'level')?.value?.value),
+      }));
+  } finally {
+    await cdp.detach();
+  }
+}
+
+test.describe('the heading outline (G27)', () => {
+  test('the reader has one level 1, first, and a stream of articles under it at level 2', async ({ page }) => {
+    await boot(page);
+    await openRow(page, 0);
+    // A stream, not an article: the bug needed more than one title.
+    await expect(page.locator('.article')).not.toHaveCount(1, { timeout: 30_000 });
+    const titles = await page.locator('.article h1').evaluateAll((hs) => hs.map((h) => h.textContent.trim()));
+    expect(titles.length).toBeGreaterThan(1);
+
+    const heads = await outline(page);
+    const ones = heads.filter((h) => h.level === 1);
+    expect(ones, `level-1 headings in ${JSON.stringify(heads)}`).toHaveLength(1);
+    expect(heads[0], 'the page heading comes first in the outline').toEqual({ name: expect.stringMatching(/^ArticleFlux — .+/), level: 1 });
+    for (const t of titles) {
+      expect(heads.find((h) => h.name === t), `article "${t}" in the outline`).toMatchObject({ level: 2 });
+    }
+    // The list's own title is the level 2 it always was. Desktop only: on a phone
+    // the pane that is not showing (the list, behind the article) is out of the
+    // accessibility tree altogether, which is right and is not this test's claim.
+    if (!(await isPhone(page))) {
+      const listTitle = (await page.locator('.list-title').innerText()).trim();
+      expect(heads.find((h) => h.name === listTitle)).toMatchObject({ level: 2 });
+      expect(heads[0].name).toBe(`ArticleFlux — ${listTitle}`);
+    }
+  });
+
+  test('the page heading follows the scope', async ({ page }) => {
+    await boot(page);
+    await openStream(page, /^Read later/);
+    const listTitle = (await page.locator('.list-title').innerText()).trim();
+    await expect.poll(async () => (await outline(page))[0]?.name).toBe(`ArticleFlux — ${listTitle}`);
+  });
+
+  test('Settings has one level 1 of its own, and the reader\'s is gone', async ({ page }) => {
+    await boot(page);
+    await openRow(page, 0);
+    const titles = await page.locator('.article h1').evaluateAll((hs) => hs.map((h) => h.textContent.trim()));
+    await openSettings(page);
+    const heads = await outline(page);
+    const ones = heads.filter((h) => h.level === 1);
+    expect(ones, JSON.stringify(heads)).toEqual([{ name: 'Settings', level: 1 }]);
+    expect(heads.some((h) => /^ArticleFlux — /.test(h.name))).toBe(false);
+    // Nothing from the article stream either: its pane is display:none behind Settings.
+    expect(heads.some((h) => h.name === titles[0])).toBe(false);
   });
 });

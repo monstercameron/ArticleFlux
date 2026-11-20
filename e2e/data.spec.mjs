@@ -131,7 +131,7 @@ test.describe('settings › data', () => {
       page.waitForEvent('download'),
       page.locator('[data-action="data-export"]').click(),
     ]);
-    expect(download.suggestedFilename()).toBe('feeds.opml');
+    expect(download.suggestedFilename()).toMatch(/^articleflux-feeds-\d{4}-\d{2}-\d{2}\.opml$/);
 
     const path = await download.path();
     const { readFileSync } = await import('node:fs');
@@ -142,6 +142,6 @@ test.describe('settings › data', () => {
     // button on it.
     expect(body).toContain('xmlUrl=');
 
-    await expect(page.locator('.set-note-live')).toContainText('feeds.opml');
+    await expect(page.locator('.set-note-live')).toContainText(/articleflux-feeds-\d{4}-\d{2}-\d{2}\.opml/);
   });
 });

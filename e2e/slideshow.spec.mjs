@@ -180,6 +180,106 @@ test.describe('slideshow', () => {
     await expect(slides(page)).toHaveAttribute('data-paused', 'false');
   });
 
+  // H7. The distance a story travels was measured ONCE, while the title card was
+  // still rising, against a stage a fraction of the height it ends up — so a
+  // story that fitted scrolled up under its own header (a 474px comic on a 915px
+  // phone moved 214px), and a long one was never re-measured when a picture
+  // landed. The geometry below is the claim: first line below the header,
+  // last line above the foot, and a story that fits holds still.
+  const geometry = (page) => page.evaluate(() => {
+    const top = (e) => e.getBoundingClientRect().top;
+    const bottom = (e) => e.getBoundingClientRect().bottom;
+    const sl = document.querySelector('.slides');
+    const stage = document.querySelector('.slide-stage');
+    const flow = document.querySelector('.slide-flow');
+    const kids = [...document.querySelector('.slide-body').children];
+    const shift = parseFloat(sl.style.getPropertyValue('--shift')) || 0;
+    const scan = parseFloat(sl.style.getPropertyValue('--scan')) || 0;
+    return {
+      shift, scan,
+      header: bottom(document.querySelector('.slide-card')),
+      stageTop: top(stage), stageBottom: bottom(stage),
+      first: top(kids[0]),
+      // Where the last block ends before any travel, which is the number the
+      // overflow is about: what is on screen now, less the offset applied.
+      lastAtRest: bottom(kids[kids.length - 1]) - shift * scan,
+      overflow: flow.offsetHeight - stage.clientHeight,
+    };
+  });
+  const SIZES = [[1440, 900], [820, 1180], [412, 915], [320, 640]];
+  // The show asks for fullscreen, and a fullscreen window refuses
+  // page.setViewportSize ("restore it to normal state first") while leaving
+  // fullscreen ends the show. The device-metrics override is the same emulation
+  // without the window, so the size changes under a show that is still running.
+  const resize = async (page, width, height) => {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width, height, deviceScaleFactor: 1, mobile: false });
+    await cdp.detach();
+  };
+
+  test('a story that fits does not scroll, at any size', async ({ page }) => {
+    await boot(page);
+    await startShow(page);
+    await expect(slides(page)).toHaveAttribute('data-phase', 'read', { timeout: 30_000 });
+    for (const [width, height] of SIZES) {
+      await resize(page, width, height);
+      // The grid rows animate over 900ms when the story opens and the measurement
+      // runs on a tick; give both a few of them rather than a fixed sleep.
+      await expect.poll(async () => (await geometry(page)).shift, {
+        message: `${width}x${height}: a story that fits was told to travel`,
+        timeout: 20_000,
+      }).toBe(0);
+      const g = await geometry(page);
+      expect(g.first, `${width}x${height}: the first line is under the header`)
+        .toBeGreaterThanOrEqual(g.header - 1);
+      expect(g.lastAtRest, `${width}x${height}: the story does not fit this fixture`)
+        .toBeLessThanOrEqual(g.stageBottom);
+    }
+  });
+
+  test('a story that does not fit starts below the header and ends above the foot', async ({ page }) => {
+    await boot(page);
+    await startShow(page);
+    // The fixture's one long article. Stepped to by its headline rather than by
+    // position, because the feed's order is the clock's and not this test's.
+    for (let i = 0; i < 5 && !/write lock/.test(await page.locator('.slide-head').innerText()); i++) {
+      await control(page, 'ArrowRight');
+      await expect(page.locator('.slide-order')).toHaveText(new RegExp(`^${i + 2} of 5$`));
+    }
+    await expect(page.locator('.slide-head')).toHaveText(/write lock/);
+    await expect(slides(page)).toHaveAttribute('data-phase', 'read', { timeout: 40_000 });
+    for (const [width, height] of SIZES) {
+      await resize(page, width, height);
+      await expect.poll(async () => (await geometry(page)).overflow, { timeout: 20_000 })
+        .toBeGreaterThan(40);
+      // It travels, and not further than there is to travel.
+      await expect.poll(async () => (await geometry(page)).shift, { timeout: 20_000 })
+        .toBeLessThan(-10);
+      // The travel is re-measured on a tick, so after a resize the old figure
+      // is briefly on screen; what is claimed is that it settles to the box it is
+      // in, and never travels past the end of the story.
+      await expect.poll(async () => {
+        const now = await geometry(page);
+        return -now.shift - now.overflow;
+      }, { message: `${width}x${height}: travels past its own end`, timeout: 20_000 })
+        .toBeLessThanOrEqual(1);
+      const g = await geometry(page);
+      expect(g.first, `${width}x${height}: the first line starts under the header`)
+        .toBeGreaterThanOrEqual(g.header - 1 + g.shift * g.scan);
+      // A story the clock lets travel its whole length ends with its last block
+      // above the foot of the stage; one too long to read in the time it has
+      // travels only as far as it can be read (slideScrollRate) and does not
+      // finish, which is the design, so only the first is held to the foot.
+      if (-g.shift >= g.overflow - 1) {
+        expect(g.lastAtRest + g.shift, `${width}x${height}: the last line never reaches the screen`)
+          .toBeLessThanOrEqual(g.stageBottom);
+      } else {
+        expect(-g.shift, `${width}x${height}: a long story that did not travel`).toBeGreaterThan(10);
+      }
+    }
+  });
+
   test('the arrows move between stories, and the order follows', async ({ page }) => {
     await boot(page);
     await startShow(page);

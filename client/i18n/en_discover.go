@@ -23,6 +23,11 @@ func init() {
 		// cannot see the colour it was nothing at all.
 		"followed":  "Following {name}.",
 		"dismissed": "Dismissed {name}.",
+		// Not for me waits out the Undo window before it is sent (G26), so these
+		// are its two other endings: taken back, and refused when it was finally
+		// sent — the card is back on the page when the second is said.
+		"restored":      "Brought {name} back.",
+		"dismissFailed": "Couldn't dismiss {name}. It's back in the list.",
 
 		// The "2 posts reviewed" gate's own opt-in (Cam, 2026-08-01) — off by
 		// default, same as every other Smart+ egress in this app.

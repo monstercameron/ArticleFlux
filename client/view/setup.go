@@ -207,6 +207,11 @@ func Setup(p setupProps) ui.Node {
 				}
 				codes.Set(res.GetRecoveryCodes())
 				step.Set(stepCodes)
+				// The form this replaced held focus and is gone, so focus fell to
+				// <body> on the one screen whose whole job is to be read and acted
+				// on: the Copy button is the first thing to do with the codes, and
+				// a screen reader is told where it now is (H13).
+				platform.FocusField("setup-copy")
 			})
 		}()
 	}
@@ -258,7 +263,7 @@ func Setup(p setupProps) ui.Node {
 
 	return html.Main(html.Props{Class: "login", Data: map[string]string{"phase": "setup"}},
 		html.Form(html.Props{Class: "login-card",
-			Raw: map[string]any{"onsubmit": "return false"}},
+			OnSubmit: suppressSubmit()},
 			// The page's heading, as on the login card — see Login.
 			html.H1(html.Props{Class: "login-mark"}, html.Text(tr.T("setup", "mark"))),
 			html.P(html.Props{Class: "login-lede"}, html.Text(tr.T("setup", "lede"))),

@@ -224,6 +224,7 @@ func init() {
 		"emptyMissingFeed":       "That feed isn't here",
 		"emptyMissingTag":        "That tag isn't here",
 		"emptyMissingFolder":     "That folder isn't here",
+		"emptyMissingTopic":      "That topic isn't here",
 		"emptyMissingHint":       "It may have been removed, or the link may be to a different account.",
 		"emptySearchHint":        "Every feed was searched. Try fewer words, or clear the search box.",
 		"emptyUnread":            "All caught up",
@@ -348,6 +349,8 @@ func init() {
 
 		"pickTitle":     "Pick something to read",
 		"pickHint":      "j and k move through the list, o opens the original.",
+		"noneTitle":     "Nothing to read yet",
+		"noneHint":      "Add a feed and its articles will appear here.",
 		"pickHintTouch": "Tap an article in the list to read it.",
 		"backToList":    "‹ List",
 

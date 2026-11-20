@@ -59,6 +59,7 @@ const (
 	roleDiscoverFollow    = "rec-follow-"
 	roleDiscoverRefresh   = "discover-refresh"
 	attrDiscoverReject    = "data-discover-reject"
+	attrDiscoverUndo      = "data-discover-undo"
 	attrDiscoverRefresh   = "data-discover-refresh"
 	attrDiscoverSmartPlus = "data-discover-smartplus"
 )
@@ -164,6 +165,13 @@ const discoverLeaveAnimMS = 380 * time.Millisecond
 func playDiscoverLeave(
 	domain, kind string, leaving, leavingKind ui.State[string], removeDomain func(string),
 ) {
+	// A card still mid-exit when another leaves would be left on the page for
+	// good: the timer below gives up on a domain that is no longer the one
+	// leaving, which was a rule for a refresh moving on and became a hole once
+	// Not for me stopped waiting for the server (two dismissals inside 380ms).
+	if prev := leaving.Get(); prev != "" && prev != domain {
+		removeDomain(prev)
+	}
 	leavingKind.Set(kind)
 	leaving.Set(domain)
 	go func() {
@@ -177,6 +185,23 @@ func playDiscoverLeave(
 			leavingKind.Set("")
 		})
 	}()
+}
+
+// discoverUndoWindow is how long "Not for me" can be taken back. Long enough to
+// notice the sentence, find the button and press it with a keyboard or a
+// pointer-slow hand; short enough that the answer still reaches the server while
+// the reader remembers having given it.
+const discoverUndoWindow = 10 * time.Second
+
+// heldReject is a dismissal the server has not been told about yet. Not for me is
+// permanent (§18.7) and the contract has no way back, so instead of sending it
+// and offering an Undo that would need a new RPC, the card leaves the page at once
+// and the RPC waits out the window; Undo is then just putting the card back.
+type heldReject struct {
+	domain, name string
+	rec          *pb.Recommendation
+	at           int // where the card sat, so it returns to the same place
+	timer        *time.Timer
 }
 
 // Discover fetches and renders the open recommendation list.
@@ -207,6 +232,16 @@ func Discover(p DiscoverProps) ui.Node {
 	// said is the sentence for the last Follow or Not for me, in a live region
 	// that is always in the document (G26). Cleared by the next action.
 	said := ui.UseState("")
+	// undoOffer is the banner's sentence while the last "Not for me" can still be
+	// taken back (G26); empty when there is nothing to take back. held is that
+	// dismissal itself, a Ref because the page-hide and unmount paths must read it
+	// without a render, and clientRef/alive give those same two paths the live
+	// client and whether this page is still mounted.
+	undoOffer := ui.UseState("")
+	held := ui.UseRef((*heldReject)(nil))
+	clientRef := ui.UseRef((*data.Client)(nil))
+	clientRef.Set(p.Client)
+	alive := ui.UseRef(true)
 	// gen guards against a stale response landing after a newer request —
 	// the same discipline loadFolders uses in reader.go, needed here because
 	// Refresh can be clicked again before the first load returns.
@@ -391,6 +426,123 @@ func Discover(p DiscoverProps) ui.Node {
 		return domain
 	}
 
+	// sendHeld tells the server about a dismissal that was held back. Off the
+	// render loop; onFail, when given, comes back through PostAsync.
+	sendHeld := func(h *heldReject, onFail func()) {
+		c := clientRef.Get()
+		if c == nil {
+			return
+		}
+		go func() {
+			if err := c.RejectRecommendation(context.Background(), h.domain); err != nil && onFail != nil {
+				ui.PostAsync(onFail)
+			}
+		}()
+	}
+	// restoreCard puts a held card back where it was, unless it never left (an
+	// Undo pressed inside the exit animation).
+	restoreCard := func(h *heldReject) {
+		cur := recs.Get()
+		for _, r := range cur {
+			if r.GetDomain() == h.domain {
+				return
+			}
+		}
+		at := min(max(h.at, 0), len(cur))
+		next := make([]*pb.Recommendation, 0, len(cur)+1)
+		next = append(next, cur[:at]...)
+		next = append(next, h.rec)
+		next = append(next, cur[at:]...)
+		recs.Set(next)
+	}
+	// flushHeld makes the held dismissal final without touching any state: it is
+	// what leaving the tab and pagehide run, where a render is the last thing to
+	// wait for. Reads refs only, so the copy the unmount cleanup holds from the
+	// first render is as good as the latest.
+	flushHeld := func() {
+		h := held.Get()
+		if h == nil {
+			return
+		}
+		held.Set(nil)
+		h.timer.Stop()
+		sendHeld(h, nil)
+	}
+	// commitHeld is the same for a render-loop caller: the window ran out, or
+	// something (another dismissal, Refresh, switching review off) means the
+	// reader has moved on. keepOffer is the second dismissal, which is about to
+	// replace the banner and must not hand focus away on the way.
+	commitHeld := func(keepOffer bool) {
+		h := held.Get()
+		if h == nil {
+			return
+		}
+		held.Set(nil)
+		h.timer.Stop()
+		if !keepOffer {
+			// The Undo the reader may be sitting on is about to disappear: focus
+			// would fall to <body> and a keyboard reader would start again from the
+			// top of the page.
+			if platform.FocusedIn(".discover-page .banner") {
+				platform.FocusField(roleDiscoverRefresh)
+			}
+			undoOffer.Set("")
+		}
+		sendHeld(h, func() {
+			// The server refused. The card is the truth again; say so, because the
+			// banner that offered the Undo is long gone.
+			if alive.Get() {
+				restoreCard(h)
+				said.Set(tr.T("discover", "dismissFailed", i18n.Args{"name": h.name}))
+			}
+		})
+	}
+
+	// Leaving the tab unmounts this page, and a backgrounded or closing tab may
+	// never come back: either way the dismissal is sent now rather than lost with
+	// the timer. A request started from pagehide is not guaranteed to leave; if
+	// it does not, the failure is the benign one — the card is suggested again
+	// next visit, never a dismissal the reader did not make.
+	ui.UseEffect(func() func() {
+		alive.Set(true)
+		l := platform.OnPageHide(func() {
+			if held.Get() == nil {
+				return
+			}
+			flushHeld()
+			ui.PostAsync(func() { undoOffer.Set("") })
+		})
+		return func() {
+			alive.Set(false)
+			l.Release()
+			flushHeld()
+		}
+	}, []any{})
+
+	ui.UseEffect(func() func() {
+		l := platform.OnDelegatedClick("#discover-page", attrDiscoverUndo, func(string) {
+			ui.PostAsync(func() {
+				h := held.Get()
+				if h == nil {
+					return
+				}
+				held.Set(nil)
+				h.timer.Stop()
+				if leaving.Get() == h.domain {
+					leaving.Set("")
+					leavingKind.Set("")
+				}
+				restoreCard(h)
+				undoOffer.Set("")
+				said.Set(tr.T("discover", "restored", i18n.Args{"name": h.name}))
+				// The Undo that was pressed has left the page; the card it brought
+				// back is where the reader was.
+				platform.FocusField(roleDiscoverFollow + h.domain)
+			})
+		})
+		return l.Release
+	}, []any{p.Client})
+
 	ui.UseEffect(func() func() {
 		l := platform.OnDelegatedClick("#discover-page", attrDiscoverSmartPlus, func(string) {
 			ui.PostAsync(func() {
@@ -398,6 +550,7 @@ func Discover(p DiscoverProps) ui.Node {
 				if c == nil || smartPlusBusy.Get() {
 					return
 				}
+				commitHeld(false)
 				next := !smartPlus.Get()
 				smartPlus.Set(next) // optimistic — the toggleFeedFilter pattern
 				if next {
@@ -453,6 +606,9 @@ func Discover(p DiscoverProps) ui.Node {
 				if c == nil || refreshing.Get() {
 					return
 				}
+				// A refresh re-lists from the server, which would bring back a
+				// card whose dismissal it has not been told about.
+				commitHeld(false)
 				refreshing.Set(true)
 				// The stale list sitting there through a refresh read as "nothing
 				// happened" (Cam, 2026-08-01) — loading.Set(true) here reuses
@@ -522,19 +678,34 @@ func Discover(p DiscoverProps) ui.Node {
 				if c == nil || busy.Get() != "" || domain == "" {
 					return
 				}
-				busy.Set(domain)
-				said.Set("")
+				var rec *pb.Recommendation
+				at := -1
+				for i, r := range recs.Get() {
+					if r.GetDomain() == domain {
+						rec, at = r, i
+					}
+				}
+				if rec == nil {
+					return
+				}
+				// Not for me is permanent and the contract has no way back, so it
+				// is held here for the length of the Undo window and only then
+				// sent (G26). Only the latest can be taken back: dismissing
+				// another card makes the one before it final.
+				commitHeld(true)
 				name := nameOf(domain)
-				go func() {
-					err := c.RejectRecommendation(context.Background(), domain)
+				h := &heldReject{domain: domain, name: name, rec: rec, at: at}
+				h.timer = time.AfterFunc(discoverUndoWindow, func() {
 					ui.PostAsync(func() {
-						busy.Set("")
-						if err == nil {
-							said.Set(tr.T("discover", "dismissed", i18n.Args{"name": name}))
-							playDiscoverLeave(domain, "reject", leaving, leavingKind, removeDomain)
+						if held.Get() == h {
+							commitHeld(false)
 						}
 					})
-				}()
+				})
+				held.Set(h)
+				said.Set("")
+				undoOffer.Set(tr.T("discover", "dismissed", i18n.Args{"name": name}))
+				playDiscoverLeave(domain, "reject", leaving, leavingKind, removeDomain)
 			})
 		})
 		return l.Release
@@ -572,6 +743,11 @@ func Discover(p DiscoverProps) ui.Node {
 		// Always present, so a screen reader hears the change rather than a region
 		// that appeared with its text already in it.
 		kitLive(kitLiveProps{Class: "discover-said", Role: kitRoleStatus}, html.Text(said.Get())),
+		// The way back from Not for me (G26): the banner that says it was done
+		// carries the Undo, as Mark all read's does in the list.
+		ui.If(undoOffer.Get() != "", func() ui.Node {
+			return discoverUndoBanner(tr, undoOffer.Get())
+		}),
 		// Said above the list it is about, and only while the list is shown: with
 		// review off there is no list, and mid-load there is nothing to qualify.
 		ui.If(!p.NoKey && smartPlus.Get() && reviewDown.Get() && !loading.Get() && !loadErr.Get(), func() ui.Node {
@@ -582,6 +758,17 @@ func Discover(p DiscoverProps) ui.Node {
 				loading.Get(), loadErr.Get(), recs.Get(), busy.Get(), leaving.Get(), leavingKind.Get())
 		}),
 	)
+}
+
+// discoverUndoBanner is the list banner's shape (kitBanner, and the same
+// "Undo" chip the list's Mark all read receipt carries) for a dismissal that can
+// still be taken back. The chip names its own attribute rather than a reader
+// action: it belongs to this page's state, which Reader does not hold.
+func discoverUndoBanner(tr i18n.Runtime, text string) ui.Node {
+	return kitBanner(kitBannerProps{Text: text},
+		kitAction(kitChipProps{TypeButton: true, Mini: true, Extra: "banner-undo",
+			Data:  []html.DataAttribute{{Name: strings.TrimPrefix(attrDiscoverUndo, "data-"), Value: "1"}},
+			Label: tr.T("list", "undo")}))
 }
 
 // discoverReviewDown is the line above the list when Smart+'s review could not

@@ -360,8 +360,12 @@ func TrapTabTopDialog(backwards bool) bool {
 	if !open.Truthy() {
 		return false
 	}
+	// Only what the browser itself would Tab to: a control with tabindex -1 is
+	// reached by the arrows, and walking it here made the tag symbol picker fifty-
+	// one Tab stops again inside its dialog (H14).
+	const tabbable = `:not([disabled]):not([tabindex="-1"])`
 	items := open.Call("querySelectorAll",
-		`a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])`)
+		`a[href]:not([tabindex="-1"]), button`+tabbable+`, input`+tabbable+`, select`+tabbable+`, textarea`+tabbable+`, [tabindex]:not([tabindex="-1"])`)
 	count := items.Get("length").Int()
 	if count == 0 {
 		return true // consumed: a modal with nothing to focus still owns Tab
@@ -1476,6 +1480,9 @@ func OnPaneResize(rootSelector string, onMove func(grip string, x int), onCommit
 		px := strings.TrimSuffix(strings.TrimSpace(RootVar("--w-"+which)), "px")
 		if n, err := strconv.Atoi(px); err == nil {
 			g.Call("setAttribute", "aria-valuenow", strconv.Itoa(n))
+			lo, hi := PaneLimits(which)
+			g.Call("setAttribute", "aria-valuemin", strconv.Itoa(lo))
+			g.Call("setAttribute", "aria-valuemax", strconv.Itoa(hi))
 		}
 	}
 	keydown := js.FuncOf(func(_ js.Value, args []js.Value) any {
@@ -1492,11 +1499,15 @@ func OnPaneResize(rootSelector string, onMove func(grip string, x int), onCommit
 			return nil
 		}
 		step := 0
-		switch e.Get("key").String() {
+		key := e.Get("key").String()
+		switch key {
 		case "ArrowLeft":
 			step = -keyStep
 		case "ArrowRight":
 			step = keyStep
+		case "Home", "End":
+			// Narrowest and widest: an edge far past either end, which the
+			// clamp in onMove turns into the limit.
 		default:
 			return nil
 		}
@@ -1522,6 +1533,12 @@ func OnPaneResize(rootSelector string, onMove func(grip string, x int), onCommit
 				drawn := prev.Call("getBoundingClientRect").Get("width").Float()
 				x += want - int(drawn+0.5)
 			}
+		}
+		switch key {
+		case "Home":
+			x, step = 0, -1<<20
+		case "End":
+			x, step = 0, 1<<20
 		}
 		onMove(which, x+step)
 		describe(g)
@@ -1897,28 +1914,72 @@ func SpeechAvailable() bool {
 		js.Global().Get("SpeechSynthesisUtterance").Truthy()
 }
 
-// SpeakElement reads an element's text aloud, reporting state changes.
+// SpeechVoiceCount is how many voices the synthesiser has installed. A browser
+// can have a synthesiser and no voice to run it with (a stripped Linux build, a
+// headless profile): every utterance is then accepted and nothing is heard. The
+// list loads asynchronously in some browsers, so a zero soon after the page opens
+// is not yet an answer — the caller asks again before it says so.
+func SpeechVoiceCount() int {
+	if !SpeechAvailable() {
+		return 0
+	}
+	return js.Global().Get("speechSynthesis").Call("getVoices").Length()
+}
+
+// What SpeakElement found, which is a different question from what the voice
+// then did. "The page has not drawn the article yet" and "the article is drawn
+// and has nothing to read" both used to come back as the voice having FINISHED,
+// and a caller that treats finishing as the cue for the next article raced
+// through a whole list in a few hundred milliseconds, speaking none of it.
+const (
+	// SpeakStarted: the text is queued and the voice is on its way.
+	SpeakStarted = "started"
+	// SpeakAbsent: the element is not in the page (or is still a placeholder).
+	// Nothing was said and nothing is wrong yet — ask again in a moment.
+	SpeakAbsent = "absent"
+	// SpeakEmpty: the element is there and has no text (an image, a video). The
+	// caller's whenEmpty sentence was spoken instead.
+	SpeakEmpty = "empty"
+)
+
+// speechGen numbers the speaking runs, so a callback left over from one that
+// has been replaced can tell it is no longer the current one.
+var speechGen int
+
+// SpeakElement reads an element's text aloud, reporting state changes, and
+// returns what it found (SpeakStarted, SpeakAbsent or SpeakEmpty).
 //
 // The text comes from `innerText` rather than being re-derived in Go, so what is
 // spoken is exactly what is rendered — including the fact that innerText already
 // drops what is visually hidden and collapses layout whitespace the way a person
 // reading the screen would.
 //
+// `lead` is said first, as its own utterance: the headline, so a listener in the
+// middle of a run of short articles can tell which story this is. `whenEmpty`
+// is said instead of the body when the element has no text, so an article that
+// is only a picture is announced rather than skipped in silence.
+//
 // **Chunked into sentences, deliberately.** A single long utterance is a
 // long-standing Chrome bug: it stops after ~15 seconds with no error and no
 // `end` event, so an article simply goes quiet in the middle. Queueing many short
 // utterances sidesteps it entirely, and it also makes pause and stop responsive,
 // because the engine can only act on a boundary it has reached.
-func SpeakElement(selector string, onState func(state string)) {
+//
+// **One utterance ahead, not all of them at once.** An utterance's rate is fixed
+// when it is handed to the engine, so queueing a whole article up front would
+// make a speed change wait for the next article. Each `end` hands over the
+// utterance after the next, which keeps the engine fed (no gap between
+// sentences) and lets a new speed take hold within a sentence or two.
+func SpeakElement(selector, lead, whenEmpty string, onState func(state string)) string {
 	if !SpeechAvailable() {
 		onState("unsupported")
-		return
+		return SpeakAbsent
 	}
-	doc := js.Global().Get("document")
-	el := doc.Call("querySelector", selector)
+	// A body that is still a loading placeholder carries role=status, and so does
+	// one that failed to load; neither is the article.
+	el := js.Global().Get("document").Call("querySelector", selector+`:not([role="status"])`)
 	if !el.Truthy() {
-		onState("idle")
-		return
+		return SpeakAbsent
 	}
 	text := ""
 	if v := el.Get("innerText"); v.Truthy() {
@@ -1927,31 +1988,61 @@ func SpeakElement(selector string, onState func(state string)) {
 		text = v.String()
 	}
 	text = strings.TrimSpace(text)
+
+	var parts []string
+	res := SpeakStarted
 	if text == "" {
-		onState("idle")
-		return
+		res = SpeakEmpty
+		if whenEmpty = strings.TrimSpace(whenEmpty); whenEmpty != "" {
+			parts = chunkForSpeech(whenEmpty, 220)
+		}
+	} else {
+		if lead = strings.TrimSpace(lead); lead != "" {
+			parts = append(parts, chunkForSpeech(lead, 220)...)
+		}
+		parts = append(parts, chunkForSpeech(text, 220)...)
+	}
+	SpeechStop()
+	if len(parts) == 0 {
+		return res
 	}
 
-	SpeechStop()
-
+	speechGen++
+	gen := speechGen
 	synth := js.Global().Get("speechSynthesis")
-	parts := chunkForSpeech(text, 220)
-	for i, part := range parts {
-		u := js.Global().Get("SpeechSynthesisUtterance").New(part)
-		if i == len(parts)-1 {
-			// Only the last chunk reports completion. Reporting per chunk would
-			// flicker the control between playing and idle forty times.
-			f := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+	next := 0
+	var enqueue func()
+	enqueue = func() {
+		if next >= len(parts) {
+			return
+		}
+		i := next
+		next++
+		u := js.Global().Get("SpeechSynthesisUtterance").New(parts[i])
+		// The reader's own speed, read now rather than once per article.
+		u.Set("rate", speechRate)
+		f := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+			if gen != speechGen {
+				return nil
+			}
+			if i == len(parts)-1 {
+				// Only the last chunk reports completion. Reporting per chunk would
+				// flicker the control between playing and idle forty times.
 				onState("idle")
 				releaseSpeech()
 				return nil
-			})
-			speechChunks = append(speechChunks, f)
-			u.Set("onend", f)
-		}
+			}
+			enqueue()
+			return nil
+		})
+		speechChunks = append(speechChunks, f)
+		u.Set("onend", f)
 		synth.Call("speak", u)
 	}
+	enqueue()
+	enqueue()
 	onState("playing")
+	return res
 }
 
 // SpeechPause pauses, SpeechResume continues, SpeechStop abandons the queue.
@@ -3331,10 +3422,11 @@ func RestoreFocus(name string) {
 		}
 		// Not stolen from a reader who has already moved on — but a dialog that
 		// is still fading out keeps its markup (see scrim), so focus left in it
-		// counts as nowhere.
+		// counts as nowhere — and so does the slideshow, which holds focus while it
+		// runs and is torn out by the render after the one that closed it.
 		active := doc.Get("activeElement")
 		if active.Truthy() && !active.Equal(doc.Get("body")) && !active.Equal(el) &&
-			!active.Call("closest", ".pal-scrim").Truthy() {
+			!active.Call("closest", ".pal-scrim, .slides").Truthy() {
 			return nil
 		}
 		el.Call("focus")

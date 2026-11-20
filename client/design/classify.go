@@ -164,6 +164,16 @@ func init() {
 		// every chip is a click target — the pointer cursor is not decoration.
 		css.Cursor.Pointer,
 	)
+	// On a list row's dateline the chip is the second thing to give way, after the
+	// source name and before the reading time (F15): a row with a category AND a
+	// stale tag has no room for all of them at 320px, and the chip's word is the
+	// one that can lose its tail — "Softw…" is still a category, "11 min re…" is
+	// not a duration. Block rather than inline-flex because an ellipsis needs a
+	// block container, and the chip holds nothing but its text.
+	css.Global(".item-meta .cat-chip",
+		css.Display.Block, r("flex", "0 1 auto"), css.MinWidth(css.Ch(4)),
+		css.Overflow.Hidden, r("text-overflow", "ellipsis"),
+	)
 	css.Global(".cat-chip:hover",
 		r("background", "color-mix(in oklab, var(--cat, transparent) "+strconv.Itoa(catHoverFill)+"%, transparent)"))
 	// The light-theme flip, identical in shape to Sheet()'s --ink rule: at 62%

@@ -38,6 +38,12 @@ var routeCases = []struct {
 	{"a feed", "/feed/01J2SRC", route{sel: scope{SourceID: "01J2SRC"}}},
 	{"a tag", "/tag/01J2TAG", route{sel: scope{TagID: "01J2TAG"}}},
 	{"a category", "/category/01J2CAT", route{sel: scope{FolderID: "01J2CAT"}}},
+	{"a topic", "/topic/software", route{sel: scope{CategorySlug: "software"}}},
+	{"the uncategorised topic", "/topic/uncategorised", route{sel: scope{Uncategorised: true}}},
+	{"an article in a topic", "/topic/ai/read/01J2ITEM",
+		route{sel: scope{CategorySlug: "ai"}, item: "01J2ITEM"}},
+	{"the slideshow over a topic", "/topic/ai/slideshow",
+		route{sel: scope{CategorySlug: "ai"}, dlg: dialogShow}},
 	{"a search", "/search?q=rust", route{sel: scope{Search: "rust"}}},
 
 	{"an article in all", "/read/01J2ITEM", route{sel: scope{}, item: "01J2ITEM"}},
@@ -354,6 +360,8 @@ func TestScopeKindCoversEveryStream(t *testing.T) {
 		{"a tag", scope{TagID: "01J2TAG"}, kindTag},
 		{"a category", scope{FolderID: "01J2CAT"}, kindFolder},
 		{"a search", scope{Search: "rust"}, kindSearch},
+		{"a topic", scope{CategorySlug: "ai"}, kindTopic},
+		{"the uncategorised", scope{Uncategorised: true}, kindTopic},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -722,10 +730,28 @@ func TestScopeMissing(t *testing.T) {
 		{"a category before folders have landed", scope{FolderID: "zzz"}, loadedLists{feeds: true, tags: true}, tags, nil, false},
 		{"a category on an account with no folders", scope{FolderID: "zzz"}, all, tags, nil, true},
 		{"a stream", scope{Unread: true}, all, tags, folders, false},
+		{"a topic it knows, before anything has landed", scope{CategorySlug: "ai"}, loadedLists{}, nil, nil, false},
+		{"a topic that is not in the taxonomy", scope{CategorySlug: "zzz"}, loadedLists{}, nil, nil, true},
 	}
 	for _, c := range cases {
 		if got := scopeMissing(c.sc, c.known, feeds, c.tags, c.fold); got != c.want {
 			t.Errorf("%s: scopeMissing = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// TestUnknownTopicKeepsNoName: /topic/<typo> opens on "that topic isn't here"
+// with the heading falling back to the missing title, not headed with the typo.
+func TestUnknownTopicKeepsNoName(t *testing.T) {
+	tr := mustRuntime(t)
+	r := parseRoute("/", "/topic/nonsense", "", tr)
+	if r.sel.CategorySlug != "nonsense" || r.sel.Title != "" {
+		t.Fatalf("got %+v, want the slug kept and no title", r.sel)
+	}
+	if !scopeMissing(r.sel, loadedLists{}, nil, nil, nil) {
+		t.Fatal("an unknown topic must read as missing")
+	}
+	if got := parseRoute("/", "/topic/ai", "", tr).sel.Title; got != tr.T("category", "ai") {
+		t.Errorf("a known topic is named %q, want the catalog's name", got)
 	}
 }

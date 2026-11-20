@@ -6,6 +6,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/monstercameron/GoWebComponents/v7/html"
 	"github.com/monstercameron/GoWebComponents/v7/ui"
@@ -13,6 +14,9 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/client/platform"
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Root decides whether the page shows the reader or the login screen.
@@ -169,7 +173,7 @@ func Root() ui.Node {
 				ui.PostAsync(func() { phase.Set(phaseLogin) })
 				return
 			}
-			who, err := c.WhoAmI(context.Background())
+			who, err := whoAmIAnswered(c)
 			// An unclaimed instance answers WhoAmI without an error and without
 			// an identity: nobody is signed in because nobody exists yet. That
 			// is setup, not login — and not the reader either, since there is no
@@ -215,15 +219,9 @@ func Root() ui.Node {
 			}
 			ui.PostAsync(func() {
 				if err != nil {
-					// Two different failures land here and they are deliberately
-					// treated the same: a rejected token, and a server that is
-					// not answering. Showing the login screen is right for the
-					// first and harmless for the second — the reader tries to
-					// sign in, sees "can't reach the server", and knows more than
-					// a spinner would have told them. The token is NOT cleared on
-					// a transport failure (the interceptor only clears on
-					// Unauthenticated), so a reload once the server is back goes
-					// straight through.
+					// Only an AUTHENTICATION answer gets here (whoAmIAnswered
+					// retries everything else): the server said this caller is
+					// nobody, so the login screen is the truth.
 					_ = c.Close()
 					phase.Set(phaseLogin)
 					return
@@ -365,6 +363,11 @@ func Root() ui.Node {
 		// the fill loop above).
 		platform.SetRootAttr("lang", shownLang(locale.Get()))
 		platform.SetRootAttr("dir", string(i18n.DirectionFor(locale.Get())))
+		// And whether some of those words are still English in a layout that
+		// reads right to left, which is what design/bidi.go keys on: it makes
+		// each run take its direction from its own letters, so the fallback is
+		// not turned inside out by the mirrored document around it.
+		platform.SetRootAttr("data-fallback", strconv.FormatBool(fallbackBidi(locale.Get())))
 		// And the splash's words, for the next load — see mirrorBootCopy. It
 		// reads through i18n.At rather than a Runtime, because an effect body
 		// runs outside the render and UseI18n is a hook.
@@ -571,4 +574,28 @@ func bootSplash() ui.Node {
 			html.Div(html.Props{Class: "login-mark"}, html.Text(tr.T("login", "mark"))),
 		),
 	)
+}
+
+// whoAmIAnswered asks WhoAmI until the server has actually ANSWERED.
+//
+// Every error used to send the reader to the login screen, on the reasoning that
+// it was harmless for a server that was not answering. It is not harmless for one
+// that is merely slow: under load the first round trip is cancelled or times out,
+// and a reader who is already signed in — on a -dev server, who has no login at
+// all — was shown "Sign in to your reader" (H15). Only Unauthenticated means
+// "sign in"; a transport error, a deadline or a cancellation is the splash
+// continuing, so it retries, quietly, with a gap that grows to a few seconds. The
+// token is not touched on the way: the interceptor only clears it on a refusal.
+func whoAmIAnswered(c *data.Client) (*pb.WhoAmIResponse, error) {
+	gap := 400 * time.Millisecond
+	for {
+		who, err := c.WhoAmI(context.Background())
+		if err == nil || status.Code(err) == codes.Unauthenticated {
+			return who, err
+		}
+		time.Sleep(gap)
+		if gap < 4*time.Second {
+			gap *= 2
+		}
+	}
 }

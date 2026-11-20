@@ -74,6 +74,7 @@ func init() {
 		// --- the add-a-feed form's own refusals, which show in the dialog
 		// rather than the banner.
 		"errNeedURL":      "Paste a feed address first.",
+		"errNotAddress":   "That is not a web address. Start it with http:// or https://.",
 		"errNeedCategory": "Name the new folder, or choose one that exists.",
 
 		// --- progress and confirmations
@@ -101,6 +102,15 @@ func init() {
 		"podcastOn": "Broadcast mode on — each article is rewritten as one segment of a continuous programme, which sends it to OpenAI.",
 		// Not an error. Reaching the end of the queue is the queue working.
 		"queueFinished": "That's the end of the list.",
+		// Said aloud by the browser voice before an article, so a run of short
+		// ones can be told apart: the headline, then where it comes from.
+		"speakLead": "{title}. From {source}.",
+		// Said instead of an article that is only a picture, and shown beside it:
+		// the listener is told, not left with a silence that sounds like a fault.
+		"speakNoText": "{title}. There is no text to read in this article.",
+		"noText":      "Nothing to read aloud in this article — it has no text.",
+		// An article whose body would not arrive; Keep playing moves on without it.
+		"noBodyToRead": "That article hasn't loaded, so there was nothing to read.",
 
 		// --- the slideshow (§19)
 		//
@@ -124,6 +134,13 @@ func init() {
 		// --- scope titles that are built rather than fixed
 		"scopeSearch": "Results for {query}",
 		"scopeTag":    "Tagged {tag}",
+
+		// --- the reader page's hidden level-1 heading (G27)
+		//
+		// The page's name for someone navigating by headings: the application, then
+		// the scope on screen. Bare when there is no scope name yet (still loading).
+		"pageHeading":     "ArticleFlux — {scope}",
+		"pageHeadingBare": "ArticleFlux",
 	})
 
 	// The refresh summary's three clauses.

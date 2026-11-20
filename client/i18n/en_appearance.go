@@ -74,6 +74,7 @@ func init() {
 		"attuneHint":       "Your theme stays your theme — it drifts toward a room built for your interests, one small step per day.",
 		"attuneNothingYet": "Nothing to follow yet. Once you have read enough for interests to form, the drift starts on its own.",
 		"attuneProgress":   "About {percent}% of the way to a room built around your {why} reading.",
+		"attuneStarting":   "Setting out toward a room built around your {why} reading, one small step a day.",
 		"attuneArrived":    "Arrived: this is the room your {why} reading built. It will start moving again when your interests do.",
 		"attuneReset":      "Start over from my theme",
 		"attuneSmartLabel": "Smart+ colours",

@@ -18,6 +18,19 @@ package i18n
 // server.
 func init() {
 	text(DefaultLocale, "srv", map[string]string{
+		// --- adding a feed: what the server saw at the address (feederr.go). Each
+		// names the fault, because "Something went wrong on the server" told a
+		// reader with a typo that the server had broken.
+		"feedBadURL":      "That is not a web address. Start it with http:// or https://.",
+		"feedPrivate":     "That address is private or local, and this server does not fetch those.",
+		"feedScheme":      "Only http:// and https:// addresses can be followed.",
+		"feedHTTP":        "That address answered HTTP {status}, so there is no feed there.",
+		"feedBroken":      "There is a feed at that address, but it is malformed and could not be read.",
+		"feedNotAFeed":    "That address is not a feed.",
+		"feedTooLarge":    "That feed is larger than this server will read.",
+		"feedTimeout":     "That address took too long to answer.",
+		"feedUnreachable": "Could not connect to that address.",
+
 		// --- auth
 		"badCredentials":   "Invalid username or password.",
 		"notAuthenticated": "You are not signed in.",

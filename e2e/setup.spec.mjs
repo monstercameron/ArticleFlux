@@ -187,6 +187,9 @@ test('setup creates the account, shows the codes once, and signs you in', async 
   // The outcome of Copy sits beside Copy, and is a polite status.
   const copyRow = page.locator('.setup-copyrow');
   await expect(copyRow.locator('[data-role="setup-copy"]')).toBeVisible();
+  // H13: the form that held focus is gone, so focus is put on the first thing to
+  // do with the codes instead of falling to <body>.
+  await expect(copyRow.locator('[data-role="setup-copy"]')).toBeFocused();
   await expect(copyRow.locator('[role="status"]')).toHaveAttribute('aria-live', 'polite');
 
   await page.click('[data-role="setup-done"]');

@@ -229,4 +229,39 @@ test.describe('tag settings', () => {
     await expect(row.locator('.tag-dot')).toHaveCount(1, { timeout: 45_000 });
     await expect(row.locator('.tag-gl')).toHaveCount(0);
   });
+  // H14: fifty-one buttons were fifty-one Tab stops, so the dialog's footer was
+  // fifty presses away. It is one stop with an arrow-key grid now.
+  test('the symbol picker is one Tab stop, and the arrows walk its grid', async ({ page }) => {
+    test.skip(await isPhone(page), 'a phone has no keyboard to walk a grid with');
+    await boot(page);
+    await tagFirstArticle(page, 'rust');
+    const panel = await openTagSettings(page, 'rust');
+
+    const cells = panel.locator('.ts-glyph');
+    await expect(cells).toHaveCount(51);
+    // One stop — the default cell, because this tag wears the default.
+    await expect(panel.locator('.ts-glyph:not([tabindex="-1"])')).toHaveCount(1);
+    const stop = panel.locator('.ts-glyph[tabindex="0"]');
+    await expect(stop).toHaveAttribute('aria-label', 'Default symbol');
+
+    const label = () => page.evaluate(() => document.activeElement.getAttribute('aria-label'));
+    await stop.focus();
+    await page.keyboard.press('ArrowRight');
+    const second = await label();
+    expect(second).not.toBe('Default symbol');
+    await page.keyboard.press('ArrowLeft');
+    expect(await label()).toBe('Default symbol');
+    // Down goes to a cell on a lower line, whatever its index.
+    await page.keyboard.press('ArrowDown');
+    const below = await page.evaluate(() => document.activeElement.offsetTop);
+    expect(below).toBeGreaterThan(await stop.evaluate((el) => el.offsetTop));
+    // Home and End are the ends of the grid.
+    await page.keyboard.press('End');
+    expect(await page.evaluate(() => document.activeElement === document.querySelectorAll('.ts-glyph')[50])).toBe(true);
+    await page.keyboard.press('Home');
+    expect(await label()).toBe('Default symbol');
+    // And Tab leaves the grid instead of stepping through it.
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => !!document.activeElement.closest('.ts-glyphs'))).toBe(false);
+  });
 });

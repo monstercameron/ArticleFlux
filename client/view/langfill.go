@@ -60,6 +60,23 @@ func shownLang(locale string) string {
 	return i18n.DefaultLocale
 }
 
+// fallbackBidi is whether the screen mixes English into a layout that reads right
+// to left: the locale is a right-to-left one and some of its strings are still
+// the English fallback.
+//
+// It is the question design/bidi.go asks, and it is deliberately not
+// "shownLang != locale". That is true only while NOTHING is translated; a
+// catalog that is half filled is the more common state and has the same
+// problem on the half that is not, which plaintext resolves per run and which a
+// finished catalog does not have at all.
+func fallbackBidi(locale string) bool {
+	if i18n.DirectionFor(locale) != i18n.Direction("rtl") {
+		return false
+	}
+	done, total := langCoverage(locale)
+	return done < total
+}
+
 // isOwnerRole mirrors the server's owner check (grpcsrv's ownerRoles), for the
 // one decision the client makes with it: whether to ask the server to SPEND on
 // filling a language. Asking without the role is harmless — the server ignores

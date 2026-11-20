@@ -177,4 +177,27 @@ func railFoldCSS(r func(string, string) css.Rule) {
 	// interface is the other way. One sign, the same one the strip reads.
 	css.Global(".rail-stow > span", r("transform", "scaleX(var(--dirx, 1))"))
 	css.Global(".rail-stow", css.Media(css.MaxW(900), css.Display.None)...)
+
+	// The rail's virtual window (view/rail_window.go). The browser's scroll
+	// anchoring picks a row near the top of the viewport and, when the content
+	// above it changes size, moves scrollTop to keep it where it was. The window
+	// changes the size of the content above the rows on screen on purpose — it is
+	// the spacer — so left on, the browser answers every window shift with a scroll
+	// of its own, which shifts the window again: the rail crawls on its own.
+	css.Global(".rail-scroll", r("overflow-anchor", "none"), r("position", "relative"))
+	// And the pitch, fixed. The window is arithmetic — row n is n pitches down — so
+	// a windowed row is designed to a height rather than discovered from its content,
+	// the trade the article list's ItemRowHeight makes. One pixel of the pitch is air
+	// under the row, where the row's own margin-bottom used to be; the name already
+	// ellipsises, so nothing in a row can make it taller.
+	css.Global(".rail-list[data-win] > .feed-slot", r("height", "29px"), r("box-sizing", "border-box"))
+	css.Global(".rail-list[data-win] > .feed-slot > .feed-row",
+		r("height", "28px"), r("min-height", "0"), r("margin-bottom", "0"))
 }
+
+// RailRowPitch is the distance between two rows of a windowed run, in CSS pixels.
+// view/rail_window.go positions the window with it and the stylesheet above holds
+// the rows to it — as literals, because a formatter is not free in the bundle — so
+// the 29px and 28px above change with this, and TestRailPitchMatchesTheStylesheet (client/design)
+// holds them to it.
+const RailRowPitch = 29

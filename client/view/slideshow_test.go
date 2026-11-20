@@ -1070,3 +1070,26 @@ func TestSlideHudPressedStatesMeanSomething(t *testing.T) {
 		t.Errorf("Read to me lost its pressed state: %s", b)
 	}
 }
+
+// --- slideArrowStep -------------------------------------------------------------
+
+// The arrows go where they point on the screen. In a right-to-left interface the
+// Next button is on the LEFT, so the left arrow is the one that moves forward —
+// the report was a transport whose Next was drawn on the left and answered the
+// right arrow.
+func TestSlideArrowsFollowTheScreen(t *testing.T) {
+	for _, c := range []struct {
+		key  string
+		rtl  bool
+		want int
+	}{
+		{"ArrowRight", false, 1},
+		{"ArrowLeft", false, -1},
+		{"ArrowRight", true, -1},
+		{"ArrowLeft", true, 1},
+	} {
+		if got := slideArrowStep(c.key, c.rtl); got != c.want {
+			t.Errorf("slideArrowStep(%q, rtl=%v) = %d, want %d", c.key, c.rtl, got, c.want)
+		}
+	}
+}

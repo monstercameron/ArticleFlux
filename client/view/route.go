@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
@@ -81,6 +82,7 @@ import (
 //	/feed/<sourceID>
 //	/tag/<tagID>
 //	/category/<folderID>
+//	/topic/<slug>                       a classification label; /topic/uncategorised the rest
 //	/search?q=<text>
 //	/settings/<tab>
 //	<place>/read/<itemID>               an article open in that place
@@ -123,7 +125,16 @@ const (
 	kindTag      = "tag"
 	kindFolder   = "folder"
 	kindSearch   = "search"
+	// kindTopic is a classification label — Software, AI — and, as its one
+	// reserved value, the articles the classifier gave none (topicNone). The
+	// rail's Topics rows had no address at all (H12): a click left /read/<id>
+	// behind and a reload landed on All.
+	kindTopic = "topic"
 )
+
+// topicNone is /topic/<value> for the Uncategorised row. It cannot collide with
+// a slug: design.Categories has no label called that.
+const topicNone = "uncategorised"
 
 // landingModeFixed is the value of the `landing.mode` preference when a
 // reader has chosen a fixed landing view (Settings → Reading) rather than
@@ -220,6 +231,10 @@ func scopeKind(sc scope) (kind, value string) {
 		return kindTag, sc.TagID
 	case sc.FolderID != "":
 		return kindFolder, sc.FolderID
+	case sc.CategorySlug != "":
+		return kindTopic, sc.CategorySlug
+	case sc.Uncategorised:
+		return kindTopic, topicNone
 	case sc.SourceID != "":
 		return kindFeed, sc.SourceID
 	case sc.Unread:
@@ -273,6 +288,19 @@ func scopeOf(kind, value, title string, tr i18n.Runtime) (scope, bool) {
 			return scope{}, false
 		}
 		return scope{FolderID: value, Title: title}, true
+	case kindTopic:
+		if value == "" {
+			return scope{}, false
+		}
+		if value == topicNone {
+			return scope{Uncategorised: true, Title: tr.T("rail", "uncategorised")}, true
+		}
+		// An unknown label keeps its slug and loses its name, so scopeMissing can
+		// say "that topic isn't here" rather than head an empty list with the typo.
+		if !knownTopic(value) {
+			return scope{CategorySlug: value}, true
+		}
+		return scope{CategorySlug: value, Title: categoryName(tr, value)}, true
 	case kindSearch:
 		if value == "" {
 			return scope{}, false
@@ -335,7 +363,7 @@ func routeSegments(r route) (segs []string, query string) {
 	case kindAll:
 		// No segment: All is the document root, which is what makes the bare
 		// address the one that resumes.
-	case kindFeed, kindTag:
+	case kindFeed, kindTag, kindTopic:
 		segs = []string{kind, url.PathEscape(value)}
 	case kindFolder:
 		segs = []string{segCategory, url.PathEscape(value)}
@@ -457,8 +485,18 @@ func parseRoute(base, path, query string, tr i18n.Runtime) route {
 // "no feed selected", it is a query for the feed whose id is "".
 func kindTakesValue(kind string) bool {
 	switch kind {
-	case kindFeed, kindTag, kindFolder, kindSearch:
+	case kindFeed, kindTag, kindFolder, kindSearch, kindTopic:
 		return true
+	}
+	return false
+}
+
+// knownTopic reports whether a slug is one of the classification labels.
+func knownTopic(slug string) bool {
+	for _, c := range design.Categories {
+		if c.Slug == slug {
+			return true
+		}
 	}
 	return false
 }
@@ -649,7 +687,7 @@ func retitleScope(sc scope, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Fold
 func knownRouteHead(seg string) bool {
 	switch seg {
 	case kindAll, kindUnread, kindLiked, kindDisliked, kindLater, kindNotes, kindMyFeed,
-		kindFeed, kindTag, kindSearch, segCategory, segSettings, segRead,
+		kindFeed, kindTag, kindTopic, kindSearch, segCategory, segSettings, segRead,
 		string(dialogAdd), string(dialogShow):
 		return true
 	}
@@ -671,6 +709,9 @@ type loadedLists struct{ feeds, tags, folders bool }
 // say "that tag isn't here" for /tag/zzz instead of an empty stream.
 func scopeMissing(sc scope, loaded loadedLists, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Folder) bool {
 	switch {
+	case sc.CategorySlug != "":
+		// The taxonomy is compiled in, so this needs no list to have arrived.
+		return !knownTopic(sc.CategorySlug)
 	case sc.SourceID != "":
 		if !loaded.feeds {
 			return false

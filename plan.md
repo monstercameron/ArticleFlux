@@ -4184,6 +4184,7 @@ The grammar (`client/view/route.go`, a pure codec with a round-trip test):
 | `/` | All feeds — and the address that resumes |
 | `/unread` `/liked` `/later` `/notes` `/myfeed` `/disliked` | the streams |
 | `/feed/<sourceID>` · `/tag/<tagID>` · `/category/<folderID>` | |
+| `/topic/<slug>` · `/topic/uncategorised` | a classification label (Software, AI…) and the articles with none; a slug the taxonomy lacks opens "That topic isn't here" |
 | `/search?q=<text>` | reader-typed text belongs in a query, not a path segment |
 | `<place>/read/<itemID>` | the article open in that place |
 | `<place>/add` · `<place>/slideshow` | dialogs about nothing in particular |

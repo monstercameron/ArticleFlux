@@ -144,7 +144,7 @@ func (r addFeedWiring) wire() {
 		// round trip to be told what a two-line check already knows, and — worse
 		// — replaces "that is not a feed address" with a second, vaguer message
 		// about the same mistake.
-		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		if !hasWebScheme(url) {
 			return
 		}
 		if r.addLooking.Get() || r.addSmartBusy.Get() {
@@ -166,7 +166,6 @@ func (r addFeedWiring) wire() {
 			ui.PostAsync(func() {
 				r.addLooking.Set(false)
 				r.addSmartBusy.Set(false)
-				r.addSearched.Set(true)
 				if err != nil {
 					// The subscribe error, when there is one, is the better
 					// message: it is about the thing the reader did. This one
@@ -185,6 +184,10 @@ func (r addFeedWiring) wire() {
 				// The error survives only when the ladder itself failed, which
 				// is the branch above: then it is the only thing that knows
 				// anything.
+				// Searched only when the search ANSWERED: a failed one used to
+				// raise "No feed here — this page doesn't publish one" beside an
+				// error saying the page could not be read at all.
+				r.addSearched.Set(true)
 				r.addErr.Set("")
 				r.addCands.Set(res.GetFeeds())
 				r.addSmartStatus.Set(res.GetSmartStatus())
@@ -299,6 +302,7 @@ func (r addFeedWiring) wire() {
 					return
 				}
 				r.addOpen.Set(false)
+				platform.RestoreFocus("addFeed")
 				r.addURL.Set("")
 				r.addTitle.Set("")
 				r.addNewCat.Set("")
@@ -317,4 +321,10 @@ func (r addFeedWiring) wire() {
 			})
 		}()
 	}
+}
+
+// hasWebScheme reports whether text begins like a web address. The dialog's one
+// pre-flight check: everything past it is the server's to judge.
+func hasWebScheme(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }

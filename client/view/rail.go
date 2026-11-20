@@ -125,6 +125,11 @@ type railProps struct {
 	// set for the reason above: a map would compare by identity and the rail
 	// would re-render on every keystroke anywhere in the app.
 	openCats string
+	// win is the virtual window's measurement (rail_window.go): which rows of each long run
+	// are on screen. It is railPane's OWN state, copied in here so the helpers that draw a
+	// run can read it from the props they already take; Reader never sets it, and it is
+	// "" in every props value that crosses the memo comparison.
+	win string
 }
 
 // tagSources returns the source ids carrying a tag.
@@ -208,6 +213,22 @@ func railPane(p railProps) ui.Node {
 	// one compares unequal on every render, which would defeat the memo
 	// bailout this pane depends on.
 	tr := i18n.UseI18n()
+	// The virtual window (rail_window.go): which rows of a long run are on screen.
+	// Its own state, so scrolling the sidebar re-renders the sidebar and nothing
+	// above it. Measured again after every render — a fold, a filter or a new feed
+	// moves the run under a scroll position that has not changed — and the write is
+	// posted rather than made in the effect, because a State.Set there drops the
+	// commit's later effects (GWC 7.0.8). It is the same string unless something
+	// moved, so a render that moved nothing ends the chain.
+	win := ui.UseState("")
+	p.win = win.Get()
+	setWin := func(spec string) {
+		ui.PostAsync(func() {
+			if win.Get() != spec {
+				win.Set(spec)
+			}
+		})
+	}
 	// The sidebar is ONE Tab stop, not one per control (G10, FEATURES §5): every
 	// row, gear, caret and band button is tabindex -1 in the markup, and this gives
 	// tabindex 0 to the current row (or the first) after every render, so Tab
@@ -217,8 +238,14 @@ func railPane(p railProps) ui.Node {
 	// ordinary stops: they are the pane's own few controls, not a list.
 	ui.UseEffect(func() func() {
 		platform.RovingSync(".pane-rail", railRovingItems, ".feed-row[aria-current='true']", ".feed-row")
+		if spec := platform.RailWindow(".rail-scroll", design.RailRowPitch, railWinStep); spec != "" && spec != p.win {
+			setWin(spec)
+		}
 		return nil
 	})
+	ui.UseEffect(func() func() {
+		return platform.OnRailWindow(".rail-scroll", design.RailRowPitch, railWinStep, setWin).Release
+	}, []any{})
 	head := []ui.Node{
 		railMasthead(tr, p),
 		// The "Streams" heading is back, and it earns its 22px now that it is
@@ -375,15 +402,14 @@ func railFeeds(tr i18n.Runtime, p railProps) []ui.Node {
 	}
 
 	needle := strings.ToLower(strings.TrimSpace(p.filter))
-	var rows []ui.Node
+	var passing []*pb.Feed
 	for _, f := range p.feeds {
-		if !railFeedShown(p, f, needle) {
-			continue
+		if railFeedShown(p, f, needle) {
+			passing = append(passing, f)
 		}
-		rows = append(rows, railFeedRow(f, p.sel.SourceID == f.GetSourceId(), false))
 	}
-	feeds = append(feeds, kitListIn(kitListProps{Class: "rail-list", Label: tr.T("rail", "bandFeeds"), OmitEmpty: true}, rows)...)
-	shown := len(rows)
+	feeds = append(feeds, railFeedRun(p, "feeds", tr.T("rail", "bandFeeds"), passing, false)...)
+	shown := len(passing)
 	switch {
 	case len(p.feeds) == 0:
 		feeds = append(feeds, kitEmpty(kitEmptyProps{Class: "rail-section", Text: tr.T("rail", "emptyNoFeeds")}))
@@ -545,7 +571,11 @@ func railCategories(tr i18n.Runtime, p railProps) []ui.Node {
 // by position.
 func topicRows(tr i18n.Runtime, p railProps) []ui.Node {
 	out := make([]ui.Node, 0, len(design.Categories)+1)
+	held := topicsHeld(p)
 	for _, c := range design.Categories {
+		if !held && p.sel.CategorySlug != c.Slug {
+			continue
+		}
 		out = append(out, topicRow(tr, c.Slug, p.sel.CategorySlug == c.Slug,
 			int(p.topicUnread[c.Slug])))
 	}
@@ -686,11 +716,7 @@ func categoryRows(tr i18n.Runtime, p railProps, id, name string, feeds []*pb.Fee
 			Text: tr.T("rail", "categoryEmpty"),
 		}))
 	}
-	var rows []ui.Node
-	for _, f := range feeds {
-		rows = append(rows, railFeedRow(f, p.sel.SourceID == f.GetSourceId(), true))
-	}
-	inside = append(inside, kitListIn(kitListProps{Class: "rail-list", Label: name, OmitEmpty: true}, rows)...)
+	inside = append(inside, railFeedRun(p, "c-"+id, name, feeds, true)...)
 	return kitItem(kitItemProps{Class: "rail-cell", Key: "cell-cat-" + id}, append(out, kitFold(key, open, p.closing, inside...)...)...)
 }
 
@@ -1070,6 +1096,9 @@ type feedRowProps struct {
 	f      *pb.Feed
 	active bool
 	nested bool
+	// pos and of place a row in a windowed run (rail_window.go): its 0-based index and the
+	// run's length. of == 0 is a row in a run that renders whole.
+	pos, of int
 }
 
 // feedRowView is feedRow as a component.
@@ -1080,12 +1109,16 @@ type feedRowProps struct {
 // rebuilt all 150 rows to change the number on one of them. As components, the
 // rail rebuilds its list of row ELEMENTS, and only the row whose feed is a new
 // pointer renders. See BenchmarkRailRerenderOneUnreadChange.
-func feedRowView(p feedRowProps) ui.Node { return feedRow(i18n.UseI18n(), p.f, p.active, p.nested) }
+func feedRowView(p feedRowProps) ui.Node {
+	return feedRowAt(i18n.UseI18n(), p.f, p.active, p.nested, p.pos, p.of)
+}
 
-// railFeedRow mounts one feed's row, keyed exactly as feedRow keys its own
-// element, so the keyed list matches rows by feed rather than by position.
-func railFeedRow(f *pb.Feed, active, nested bool) ui.Node {
-	return html.WithKey(ui.CreateElement(feedRowView, feedRowProps{f: f, active: active, nested: nested}),
+// railFeedRowAt mounts one feed's row, keyed exactly as feedRow keys its own
+// element, so the keyed list matches rows by feed rather than by position. pos and
+// of place it in a windowed run as feedRowProps has them; of == 0 is a run that
+// renders whole.
+func railFeedRowAt(f *pb.Feed, active, nested bool, pos, of int) ui.Node {
+	return html.WithKey(ui.CreateElement(feedRowView, feedRowProps{f: f, active: active, nested: nested, pos: pos, of: of}),
 		feedRowKey(f.GetSourceId(), nested))
 }
 
@@ -1103,6 +1136,14 @@ func feedRowKey(sourceID string, nested bool) string {
 // both draw it, in one scroller, and two siblings sharing a key is a reconciler
 // bug rather than a duplicate row.
 func feedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
+	return feedRowAt(tr, f, active, nested, 0, 0)
+}
+
+// feedRowAt is feedRow with its place in a windowed run, when it has one: the
+// listitem says which of how many it is (aria-posinset, aria-setsize) because the
+// rows around it are not in the document. The same two attributes are how the
+// arrow keys know a row has a neighbour that is not rendered (platform.RailReach).
+func feedRowAt(tr i18n.Runtime, f *pb.Feed, active, nested bool, pos, of int) ui.Node {
 	// A feed that has failed repeatedly is dormant, and the reader has to be
 	// able to say so — a dead feed and a quiet feed look identical otherwise.
 	dormant := f.GetConsecutiveFailures() >= 3
@@ -1128,13 +1169,19 @@ func feedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
 		slot = "feed-slot feed-nested"
 	}
 
+	var slotAria map[string]string
+	if of > 0 {
+		slotAria = map[string]string{"posinset": strconv.Itoa(pos + 1), "setsize": strconv.Itoa(of)}
+	}
+
 	return kitRow(kitRowProps{
-		NoTab:   true,
-		Class:   "feed-row",
-		Hook:    html.DataAttribute{Name: "source-id", Value: f.GetSourceId()},
-		Raw:     hueVarFor(f.GetSourceId()),
-		Data:    map[string]string{"dormant": strconv.FormatBool(dormant)},
-		Current: active, Label: title,
+		NoTab:    true,
+		Class:    "feed-row",
+		SlotAria: slotAria,
+		Hook:     html.DataAttribute{Name: "source-id", Value: f.GetSourceId()},
+		Raw:      hueVarFor(f.GetSourceId()),
+		Data:     map[string]string{"dormant": strconv.FormatBool(dormant)},
+		Current:  active, Label: title,
 		Mark: kitMark(kitMarkProps{Class: "feed-dot", WrapClass: "feed-icon-wrap", ImgClass: "feed-icon",
 			Src: faviconSrc(iconHost(f))}),
 		Name: f.GetTitle(), NameTitle: titleFor(tr, f, dormant),

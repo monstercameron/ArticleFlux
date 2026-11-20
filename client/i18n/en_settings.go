@@ -96,14 +96,20 @@ func init() {
 		// duration in any language.
 		"slidesSeconds": "{n} sec",
 		// --- listening
+		"loadOffline":      "Can't load this while the connection is down. It will fill in by itself when it is back.",
 		"voiceGroup":       "Voice",
 		"browserVoice":     "Read articles aloud",
 		"browserVoiceHint": "Your browser's own synthesiser. Free, works offline, and uses the voice you already chose on this machine.",
 		"alwaysAvailable":  "always available",
-		"smartGroup":       "Smart+",
-		"smartGroupHint":   "Sends the text of the article you are listening to, to OpenAI.",
-		"smartVoice":       "Smart+ voice",
-		"smartVoiceHint":   "A better voice, at the cost of leaving this machine. Off until you turn it on, and unavailable entirely unless the server was started with an API key.",
+		// What the same row says on a browser that cannot speak: one with no voice
+		// installed, or no synthesiser at all. Said plainly, with what to do, because
+		// "always available" over a silent Listen button is a claim that is wrong.
+		"voiceNone":      "no voice installed",
+		"voiceNoneNote":  "This browser has no speech voice installed, so Read aloud will be silent. Install a voice in your system's speech settings, or use the Smart+ voice below.",
+		"smartGroup":     "Smart+",
+		"smartGroupHint": "Sends the text of the article you are listening to, to OpenAI.",
+		"smartVoice":     "Smart+ voice",
+		"smartVoiceHint": "A better voice, at the cost of leaving this machine. Off until you turn it on, and unavailable entirely unless the server was started with an API key.",
 		// Named for what it produces, not for the machinery. "Summarise before
 		// reading" says what you get; "LLM summarisation" says what we built.
 		"digest":     "Summarise before reading",

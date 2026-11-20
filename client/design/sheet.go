@@ -110,6 +110,7 @@ func Sheet() {
 	mobile(r)
 	appearanceCSS(r)
 	filmstrip(r)
+	bidi(r)
 	// After responsive() would be wrong and before it is wrong too: focusCSS
 	// carries its own breakpoints and has to outrank the base layout at each of
 	// them, which specificity gives it (.shell[data-focus] .panes beats .panes)
@@ -706,6 +707,11 @@ func list(r func(string, string) css.Rule) {
 	// response; touch() takes its tap height off too.
 	css.Global(".chip-static",
 		css.Cursor.Default, r("background", "transparent"), css.BorderColor(css.Transparent),
+		// A span, so its text sits at the top of whatever height the chip is given:
+		// under a finger the mini chip is held to 32px (touch(), above) and "rust"
+		// in Tag settings rode in the top of a taller box. Centred in the box it is
+		// given, which changes nothing where the box is the text's own height.
+		css.Display.InlineFlex, css.Items.Center,
 	)
 	css.Global(".chip-static:hover", css.TextColor(css.Var("soft")), css.BorderColor(css.Transparent))
 	// 24px tall at the least. The padding alone made these 22, which is under
@@ -833,7 +839,13 @@ func list(r func(string, string) css.Rule) {
 		// short and becomes meaningless when clipped — a reason truncated to "fr…"
 		// tells the reader nothing at all, which is what happened before this had an
 		// explicit shrink and the flex line divided the loss evenly.
-		r("flex", "0 1000 auto"), css.MinWidth(css.Ch(3)),
+		//
+		// Down to nothing, not to three characters (F15): a row with a category chip
+		// and an age tag still ran out of room at "The…", and the reading time was
+		// what was cut — "11 min re…" — because it was next in line. A source that
+		// has vanished is still told by its coloured mark; a duration cut mid-word is
+		// not told by anything.
+		r("flex", "0 1000 auto"), css.MinWidth(css.Zero),
 	)
 	// The reading time is what gives way SECOND, and it gives way with an
 	// ellipsis. The source name goes first, down to its three characters, because
@@ -843,9 +855,13 @@ func list(r func(string, string) css.Rule) {
 	// say it had been cut. The source's shrink factor is a thousand times anyone's, so
 	// nothing comes out of this until the source has nothing left to give (a
 	// factor below 1 would not do it: alone, it is scaled down by itself).
+	//
+	// Now it does not give way at all: the source above has nowhere left to go but
+	// nothing, and the reading time is a whole phrase or none of it. It keeps the
+	// ellipsis rules for the one row that is still too narrow after the source is
+	// gone, but only as the last resort the box would impose anyway.
 	css.Global(".item-read",
-		r("flex", "0 1 auto"), css.MinWidth(css.Zero),
-		css.Overflow.Hidden, r("text-overflow", "ellipsis"),
+		r("flex", "0 0 auto"), css.WhiteSpace.NoWrap,
 	)
 	css.Global(".item-source:hover", r("text-decoration", "underline"))
 	// A 3px dot at half opacity as the field separator. A middot sits on the
@@ -2019,7 +2035,10 @@ func paletteCSS(r func(string, string) css.Rule) {
 	css.Global(".pal-input",
 		css.W(css.Full), r("background", "none"), r("border", "0"),
 		css.TextColor(css.Var("cream")), css.Font(css.VarFontStack("ui")),
-		css.FontSize(css.Px(17)), r("outline", "none"),
+		css.FontSize(css.Px(17)),
+		// No `outline: none` here any more (H25): it removed the one thing that
+		// says where the keyboard is on a screen that is a single field. The
+		// global :focus-visible ring draws in the field's padding instead.
 	)
 	css.Global(".pal-input::placeholder", css.TextColor(css.Var("mute")))
 
@@ -2450,6 +2469,13 @@ func discoverCSS(r func(string, string) css.Rule) {
 	// takes no room while empty.
 	css.Global(".discover-said", css.FontSize(css.Px(13)), css.TextColor(css.Var("soft")))
 	css.Global(".discover-said:not(:empty)", r("margin", "10px 0 0"))
+	// The Undo banner is the list's banner, and the list gives it a top margin to
+	// stand off the toolbar. Here the page's own gap already spaces it.
+	css.Global(".discover-page > .banner", r("margin", "0"))
+	// Settings → Listening, on a browser with no voice: the chip, and under it the
+	// sentence that says what to do (browservoice.go).
+	css.Global(".voice-status", css.Display.Grid, css.Gap(css.Px(6)), r("justify-items", "end"))
+	css.Global(".voice-status-note", css.TextAlign.End)
 	css.Global(".discover-head-actions",
 		css.Display.Flex, css.Items.Center, css.Gap(css.Px(8)), r("flex", "none"),
 	)
@@ -2792,8 +2818,21 @@ func mobile(r func(string, string) css.Rule) {
 		r("background", "var(--cream)"), css.TextColor(css.Var("bg")), css.FontWeight.Medium,
 	)
 	css.Global(".set-tab[aria-current='true'] > .gl", css.OpacityNum(css.Num(1)))
+	// On a phone each group is ONE scrolling line, not a wrapped block (H18). The
+	// fourteen pills wrapped into seven rows and filled the first screen, so a tab
+	// chosen — or arrived on from the list header's Discover button — showed
+	// nothing of itself above the fold (its panel began at y=500 of 915). Three
+	// lines and the panel is on screen; the pills past the edge are a swipe away,
+	// and the current one is scrolled into view (platform.ScrollSettingsIntoView).
+	css.Global(".set-tab-group-row", css.Media(css.MaxW(700),
+		r("flex-wrap", "nowrap"), r("overflow-x", "auto"), r("scrollbar-width", "none"),
+		r("padding-bottom", "2px"))...)
+	css.Global(".set-tab", css.Media(css.MaxW(700),
+		r("flex", "none"), r("white-space", "nowrap"))...)
 
-	css.Global(".set-panel", css.MaxWidth(css.Rem(56)))
+	// scroll-margin so a panel scrolled into view on a phone (H18) does not sit
+	// hard against the top edge of the pane.
+	css.Global(".set-panel", css.MaxWidth(css.Rem(56)), r("scroll-margin-top", "12px"))
 	css.Global(".set-group", r("margin-top", "26px"))
 	css.Global(".set-fact",
 		css.Display.Flex, css.Justify.Between,
@@ -3223,7 +3262,10 @@ func responsive(r func(string, string) css.Rule) {
 	// beneath the toggle anyway.
 	css.Global(".article > .article-actions", css.Media(css.MaxW(900),
 		css.FlexWrap.NoWrap, r("overflow-x", "auto"), r("scrollbar-width", "none"),
-		r("margin-inline-end", "38px"),
+		// 34 for the toggle and 12 of air: at 38 the bar's cut edge sat 4px from
+		// the button, so a chip clipped mid-word ("Read lat|") ended against it
+		// and read as running underneath (G22).
+		r("margin-inline-end", "46px"),
 	)...)
 	css.Global(".article > .article-actions::-webkit-scrollbar", css.Media(css.MaxW(900),
 		css.Display.None)...)

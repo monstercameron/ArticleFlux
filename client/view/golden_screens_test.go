@@ -193,6 +193,7 @@ func screenGoldenCases() []goldenCase {
 			return discoverGatedBody(tr, true, false, false, false, nil, "", "", "")
 		}},
 		{"discover-toggle", func(tr i18n.Runtime) ui.Node { return discoverSmartPlusToggle(tr, true, false) }},
+		{"discover-undo", func(tr i18n.Runtime) ui.Node { return discoverUndoBanner(tr, "Dismissed Example Blog.") }},
 
 		// --- slideshow.go, palette.go ---
 		{"slide-hud", func(tr i18n.Runtime) ui.Node { return slideHud(tr, slideProps{paused: true, audio: true}) }},

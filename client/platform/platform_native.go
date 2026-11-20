@@ -122,7 +122,17 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done
 
 func SpeechAvailable() bool { return false }
 
-func SpeakElement(selector string, onState func(state string)) {}
+func SpeechVoiceCount() int { return 0 }
+
+const (
+	SpeakStarted = "started"
+	SpeakAbsent  = "absent"
+	SpeakEmpty   = "empty"
+)
+
+func SpeakElement(selector, lead, whenEmpty string, onState func(state string)) string {
+	return SpeakAbsent
+}
 
 func SpeechPause()  {}
 func SpeechResume() {}

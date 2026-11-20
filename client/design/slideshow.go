@@ -433,6 +433,13 @@ func slideStage(r func(string, string) css.Rule) {
 	)
 	// The lede gets the same promotion it gets in the reader, one notch up and
 	// in the full cream — it is where the eye lands when the body arrives.
+	// Per-article direction, the reader pane's rule (sheet.go, `.article-body`):
+	// the headline and the prose take it from their own letters, so an English
+	// story in an Arabic interface is left to right and an Arabic one in an
+	// English interface is not. `start` after it for the same reason as there.
+	css.Global(".slide-head, .slide-body, "+
+		".slide-body :is(p, li, h2, h3, h4, blockquote, figcaption, .slide-said)",
+		r("unicode-bidi", "plaintext"), r("text-align", "start"))
 	css.Global(".slide-body p:first-of-type",
 		css.TextColor(css.Var("cream")), css.FontSize(css.Ems(1.09)))
 	css.Global(".slide-body p", r("margin", "0 0 1em"))
@@ -665,6 +672,11 @@ func slideHud(r func(string, string) css.Rule) {
 	css.Global(".slide-btn[aria-pressed='true'], .slide-btn[data-on='true']",
 		css.TextColor(css.Var("cc")), css.BorderColor(css.Var("cc")))
 	css.Global(".slide-btn:active", r("transform", "scale(.93)"), r("transition-duration", "0s"))
+	// ‹ and › point where the step goes, and in a right-to-left interface that is
+	// the other way: Next is on the left and must say so. The sign the article's
+	// own step chips read (sheet.go, `.article-step .gl`).
+	css.Global(`.slide-btn[data-action="slide-prev"] > span, .slide-btn[data-action="slide-next"] > span`,
+		css.Display.InlineBlock, r("transform", "scaleX(var(--dirx, 1))"))
 
 	// The state line: what mode this is in and what it is waiting for. It shares
 	// the HUD's fade, so a reader who wants to know reaches for the corner and a

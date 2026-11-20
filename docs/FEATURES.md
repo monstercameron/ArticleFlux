@@ -105,6 +105,16 @@ The name also carries the unread count (`…, 128 unread`), the same sentence a 
 The selected feed is always shown even when it has nothing unread — hiding what you are reading is
 disorienting.
 
+**A long run of feeds is a window, not a list.** From 200 feeds up, the flat Feeds list (and an open
+folder that long) draws only the rows near the viewport plus 24 either side, between two spacers sized
+for the rest — the same idea as the article list, with the difference that the rail's scroller holds
+other things too, so the window is measured against it (`data-win`, `platform.RailWindow`) and the
+rail re-renders on its own scroll, once per eight rows. Each row says where it is in the whole
+(`aria-posinset` / `aria-setsize`), so a screen reader hears "1,204 of 2,000" and not "3 of 70". At
+2,000 subscriptions that is ~90 rows in the document instead of ~2,000, and the first article row lands
+as fast as with a dozen feeds. Below 200 feeds nothing about the markup changes. What the window does
+not do: it is per run, so opening every one of forty 50-feed folders still draws all 2,000 nested rows.
+
 ## 3. The item list
 
 | | |
@@ -252,7 +262,16 @@ clicked.
 The **sidebar is one Tab stop**: every row, gear, caret and section button is `tabindex -1` and the
 current row (or the first) is the pane's stop, so Tab reaches Add a feed and the fold button after it,
 not the next of a hundred rows. `↑ ↓` move between rows — from a gear too — and `← →` step between a
-row and its own gear or caret (mirrored in a right-to-left interface).
+row and its own gear or caret (mirrored in a right-to-left interface). The arrows reach every feed
+even though most are not in the document: at the edge of the rendered window `↓`/`↑` scroll to the
+next row, wait for it to render, and focus it (`platform.RailReach`).
+
+**The article list is one Tab stop too**, by the same mechanism: every row is `tabindex -1` and the
+current row — or, when the current article is outside the virtual window, the first rendered row — is
+the stop. The **tag symbol picker** is one stop as well (the chosen mark, or *None*), with `← → ↑ ↓`
+across and down the grid by where the cells are drawn and `Home`/`End` to the ends; the **resize
+grips** take `← →` (Shift for bigger steps) and `Home`/`End` to the narrowest and widest, and state
+their range (`aria-valuemin`/`aria-valuemax`).
 
 | Where | Keys |
 |---|---|
@@ -260,7 +279,7 @@ row and its own gear or caret (mirrored in a right-to-left interface).
 | **Feed list** | `↑ ↓` move · `← →` a row's gear / caret · `Enter` open |
 | **Article list** | `↑ ↓` move **and open** · `j` `k` next / previous |
 | **An article** | `o` or `Enter` open original · `l` like · `d` dislike · `t` read later · `U` mark unread · `w` focus mode · `Ctrl-Enter` save the note now |
-| **Slideshow** | `Esc` stop · `Space` pause · `→` / `j` / `n` next · `←` / `k` / `p` previous · `v` toggle voice — every other key is swallowed while it owns the screen |
+| **Slideshow** | `Esc` stop · `Space` pause · `→` / `j` / `n` next · `←` / `k` / `p` previous (`→` and `←` go where they point on the screen — in a right-to-left interface Next is on the left, so `←` is next) · `v` toggle voice — every other key is swallowed while it owns the screen |
 
 Two rules that are easy to get wrong and were:
 
@@ -339,6 +358,16 @@ A dialog, opened from the foot of the rail. **Three fields and no more:**
 Poll interval, cache depth and mute belong to a feed you already *have* and have formed an opinion
 about — they live in the per-feed panel. Putting them here would make adding a feed a configuration
 exercise.
+
+**An address that does not yield a feed is refused, and the dialog says what the server saw.** A
+new subscription whose first fetch fails is rolled back, not kept: *"…answered HTTP 404, so there is no
+feed there"*, *"Could not connect to that address"*, *"There is a feed at that address, but it is
+malformed"*, *"That address is private or local, and this server does not fetch those"* (a non-dev
+server), and — before any call — *"That is not a web address"* for text with no `http://` or
+`https://`. The address stays in the field, which is marked invalid and focused; the error is a live
+region; and the ladder below ("No feed here") runs only when the answer was *not a feed*, never beside
+a reason that already says why. A feed you already follow is never undone by a failed re-add, and
+**OPML import still subscribes without fetching** — the one path for a feed that is down today.
 
 **The dialog replaced a URL box pinned to the rail's foot.** The box was the fastest possible path
 for the one thing it could do — paste and Enter — with no room for the other two decisions a reader
@@ -695,6 +724,13 @@ than from stored HTML, so what is spoken is exactly what is on screen.
 > event, so the article simply goes quiet mid-way. Many short utterances sidestep it, and they also
 > make pause and stop responsive.
 
+The browser voice **says the headline first**, then where it is from ("*Title. From Source.*"), as its
+own sentence before the body — in a run of short articles it is the only thing that says which story
+is on. An article with **no text** (a comic, a picture) is not skipped in silence: the voice says its
+headline and that there is nothing to read, and the same sentence appears on screen. It reads at the
+reader's **Reading speed**; a change made while an article is playing takes hold within a sentence or
+two, because each sentence is handed to the engine only a sentence ahead of the one being spoken.
+
 **Smart+ voice — OpenAI, opt-in, per reader.** The toggle sits **next to the play button**, not in
 settings: it is an egress decision, and the reader should be able to see its state at the moment they
 press play. Four gates, each answering with a different status because they are different problems —
@@ -730,6 +766,11 @@ When an article finishes, mark it read and start the next one down the list. Sto
 is loaded, and says so — *"That's the end of the list"* is the queue working, not an error. Works
 with either voice. Called "Keep playing" rather than autoplay, which is a word people associate with
 something being done to them.
+
+With the browser's voice the next article is **waited for, not assumed**: it may still be loading, and
+"not drawn yet" is a different event from "finished speaking". Only finishing advances the list; an
+article that never loads is said so and passed over, and an article with no text is announced (see §20)
+and then counts as played. The hand-over to the next article never shows the floating now-playing bar.
 
 ## 22a. Join the stories up
 
@@ -1017,6 +1058,9 @@ would rather have a rhythm.
 **A slide never scrolls faster than it can be read.** Fitting a four-thousand-word essay into a
 forty-second slide would move the text past too fast to follow, which is more irritating than no text
 at all — so a long article simply does not finish, and you get its opening at a pace you can take in.
+**A story that fits does not move.** The distance is measured from the laid-out page on every tick of
+the reading phase — not once while the card is still rising — and the room left under the last
+paragraph so it can reach a reading position counts only when there is something to scroll.
 The whole thing is one keystroke away in the reader.
 
 ### FluxCast
@@ -1191,6 +1235,16 @@ stays. Plurals are asked for in every form the target language uses (Arabic's si
 
 Switching language re-renders; it does not reload — except a *forced* retranslation, which does, and
 says so.
+
+**A right-to-left language mirrors the layout, and the words keep their own direction.** The document
+takes the locale's direction, so the panes, the rail, the transport and the filmstrip all run the
+Arabic way. While any of the catalog is still English (no key, or a language mid-fill) the root carries
+`data-fallback`, and every run of text then takes its direction from its own letters
+(`unicode-bidi: plaintext`) — so an English sentence is not turned inside out (".Everything this
+reader does…") and a counter reads "2 of 10". Keyboard chips are never mirrored: *Ctrl K* reads that
+way in every language. A finished translation switches the rule off. The arrow keys follow the screen:
+in a right-to-left interface `←` goes to the thing drawn on the left (the row's gear, the slideshow's
+Next), and the Previous/Next marks point the way reading goes.
 
 Four surfaces that a naive extraction misses and this one covers: relative timestamps (Go's date
 layouts are not locale-aware and never will be), the fifty glyph names, the five splash strings shown
@@ -1444,12 +1498,12 @@ and there is no dashboard.** The person running it is the person reading it.
 | **Reading** | what the list shows me next | Articles: everything / unread only · Feeds in the sidebar: all / with unread · Mark read: when you scroll past / only when you open · the bulk-read-is-neutral disclaimer · **Slideshow**: how long each story stays up, and whether the voice sets the pace |
 | **My Feed** | why the ranked page picked that | The interest profile the deriver built — topics and named things, each with the evidence behind it and a four-way dial to argue with it (§19) |
 | **Appearance** | what it looks like | Five theme cards drawn in their own colours · seven accents plus "the theme's own" · three reading sizes with a live specimen · motion: full / reduced / follow the system |
-| **Listening** | what it sounds like, and what leaves the machine | Browser voice (always available) · **Smart+ voice**, with its egress warning attached · **Summarise before reading** · **Join the stories up** · **Keep playing** · the caching note |
+| **Listening** | what it sounds like, and what leaves the machine | Browser voice (*always available* — or, in a browser with no speech voice installed or no synthesiser at all, a plain statement that Read aloud will be silent and what to do about it) · **Smart+ voice**, with its egress warning attached · **Summarise before reading** · **Join the stories up** · **Keep playing** · the caching note |
 | **FluxCast** | making it a programme | What read-to-me needs, as a checklist with each condition's current state · the broadcast switch and the narrator's manner · where the slideshow's read-to-me requirements are answered |
 | **Smart+** | what it costs | The OpenAI key (stored encrypted, never returned, last four shown — and **"rejected by OpenAI" beside it when the provider has answered the key with a 401**, where the row and the ladder used to say "configured" and "ready" about a key that did not work) · the model (**blank is the default and saving it says so**; a save always says what it saved) · **tokens in / out / requests since the process started** · the interface-language picker (**a background translation that stops on an error says it stopped**). A Smart+ failure is the provider's, not the connection's: it never repaints the sync indicator. One status line shows at a time, and a refused field is marked invalid and takes focus |
 | **Classification** | which categories I want to see | The 26 categories the free classifier files articles into, each with a show/hide for THIS reader's chips — a view preference, not an edit to the taxonomy, and the hint says so · two Smart+ switches that render disabled, because no RPC backs them yet |
 | **Feeds** | my subscriptions as a whole | Feed count, unread, "N of M loaded" · **Fetch every feed now** · **Mark this list read** · a pointer to the per-feed gear |
-| **Data** | how my feeds get in, and out | **Import OPML**: choose a file, and it subscribes what the file contains, **two hundred rows at a time with "n of m" between the calls**, so a 3,000-row list finishes in about a second of server work and always ends in a report (a failed call leaves the report so far, with how far the file got) · a report — **subscribed (new subscriptions only)**, already had, categories, already on this server — and **every row that did not make it, named, with its reason**; a repeat import says *"Nothing new"* instead of repeating the first one's number · **Export OPML**: downloads `feeds.opml` with the categories intact |
+| **Data** | how my feeds get in, and out | **Import OPML**: choose a file, and it subscribes what the file contains, **two hundred rows at a time with "n of m" between the calls**, so a 3,000-row list finishes in about a second of server work and always ends in a report (a failed call leaves the report so far, with how far the file got) · a report — **subscribed (new subscriptions only)**, already had, categories, already on this server — and **every row that did not make it, named, with its reason**; a repeat import says *"Nothing new"* instead of repeating the first one's number · **Export OPML**: downloads `articleflux-feeds-<date>.opml` with the categories intact |
 | **Account** | who I am on this server | Signed in as · server · connection · **reconnects**, shown only once one has happened |
 | **Server** | is it healthy | Version · commit · schema migration · uptime · database and WAL size · path · article/note/tag/rated/saved counts · poll interval · last successful fetch · heap, goroutines, GC |
 | **Activity** | what just happened | The in-memory log ring, newest first, with a level filter |
@@ -1849,7 +1903,7 @@ post more than ~20 a day — recommending a dead site or a firehose is worse tha
 nothing floods, and at the end the app grades its own recommendation: *"you opened 1 of 23 — drop
 it?"*, defaulting to dropping.
 
-Dismissals are remembered per domain and never re-suggested. One or two candidates are deliberately
+Dismissals are remembered per domain and never re-suggested — and **Not for me can be taken back**: the card leaves at once and a banner offers *Undo* for ten seconds, with the card returning in its place (the dismissal is only sent once that window passes, or at once if you leave the tab, close the page, press Refresh or dismiss another card, so only the latest can be undone). One or two candidates are deliberately
 **adjacent-but-different** and labelled as such, because a recommender optimised purely for similarity
 is a filter-bubble engine with better manners.
 

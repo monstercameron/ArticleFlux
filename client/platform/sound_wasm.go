@@ -35,18 +35,13 @@ import "syscall/js"
 // broadcast with no jingle is a broadcast; an exception on the way into one is
 // not.
 
-var (
-	// audioCtx is the one AudioContext. Shared because browsers cap how many a
-	// page may create, and because two would have two clocks.
-	audioCtx js.Value
-	// bedEl is the <audio> element streaming the music, or undefined.
-	bedEl js.Value
-	// bedGain is the bed's gain node, kept for the fades and the ducking.
-	bedGain js.Value
-	// bedSrc is the URL currently playing, so asking for the same track again is
-	// a no-op rather than a restart.
-	bedSrc string
-)
+// audioCtx is the one AudioContext. Shared because browsers cap how many a
+// page may create, and because two would have two clocks.
+//
+// (The music bed's own element, gain node and current track used to be
+// declared beside it. They moved to music_wasm.go with the bed and were never
+// read here again.)
+var audioCtx js.Value
 
 // context returns the shared AudioContext, creating it on first use.
 //

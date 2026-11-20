@@ -9,6 +9,7 @@ import (
 	"github.com/monstercameron/GoWebComponents/v7/html"
 	"github.com/monstercameron/GoWebComponents/v7/ui"
 
+	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
@@ -43,6 +44,8 @@ import (
 // second line.
 
 type myFeedProps struct {
+	// conn: see smartProps.conn.
+	conn    data.ConnState
 	profile *pb.GetInterestProfileResponse
 	loading bool
 	err     string
@@ -130,7 +133,7 @@ func settingsMyFeed(tr i18n.Runtime, p myFeedProps) []ui.Node {
 		return []ui.Node{kitAlert("fs-error", p.err)}
 	}
 	if p.loading && p.profile == nil {
-		return kitSkLines("set-sk-", 0, 6, "sk-w-90")
+		return settingsLoading(tr, p.conn)
 	}
 	pr := p.profile
 

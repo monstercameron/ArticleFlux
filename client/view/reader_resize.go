@@ -43,7 +43,8 @@ func (d paneResize) wire() {
 				// that refuses the last few pixels.
 				switch which {
 				case "rail":
-					w := clampPane(x-platform.ElementLeft(".panes"), 180, 480)
+					lo, hi := platform.PaneLimits("rail")
+					w := clampPane(x-platform.ElementLeft(".panes"), lo, hi)
 					platform.SetRootVar("--w-rail", strconv.Itoa(w)+"px")
 				case "list":
 					railW := parsePx(platform.RootVar("--w-rail"), 272)
@@ -54,7 +55,8 @@ func (d paneResize) wire() {
 					// the keyboard each step right was 22px and each step left
 					// 10, so the column crept wider with every round trip.
 					gripW := parsePx(design.GripWidth, 6)
-					w := clampPane(x-platform.ElementLeft(".panes")-railW-gripW, 260, 720)
+					lo, hi := platform.PaneLimits("list")
+					w := clampPane(x-platform.ElementLeft(".panes")-railW-gripW, lo, hi)
 					platform.SetRootVar("--w-list", strconv.Itoa(w)+"px")
 				}
 			},

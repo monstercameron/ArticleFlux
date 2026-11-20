@@ -178,18 +178,35 @@ func tagSettingsBody(tr i18n.Runtime, p tagSettingsProps) []ui.Node {
 //
 // Each button carries data-value, which is the same attribute the segmented
 // controls use, so no new plumbing: the delegated listener already reports it.
+//
+// # One Tab stop (H14)
+//
+// Fifty-one buttons were fifty-one Tab stops, so the dialog's footer was fifty
+// presses away. Every cell is tabindex -1 except the stop, which is the chosen
+// mark (or "None" when the tag wears the default, or its mark is not in the set):
+// decided here, in the markup, from the same value that paints aria-pressed, so
+// it cannot disagree with it and needs no effect after the render. The arrows
+// move between cells (reader_keyboard.go, platform.GridMove).
 func tagGlyphPicker(tr i18n.Runtime, tagID, current string) ui.Node {
+	stop := glyphNone
+	for _, group := range tagglyph.Groups() {
+		for _, g := range tagglyph.In(group) {
+			if g.Char == current {
+				stop = current
+			}
+		}
+	}
 	rows := []ui.Node{
 		// "None" first and inside the grid, so restoring the default is one of
 		// the choices rather than an escape hatch beside them.
 		html.Div(html.Props{Class: "ts-glyph-row"},
-			tagGlyphButton(tagID, glyphNone, glyphTags, tr.T("tagSettings", "glyphDefault"), current == ""),
+			tagGlyphButton(tagID, glyphNone, glyphTags, tr.T("tagSettings", "glyphDefault"), current == "", stop == glyphNone),
 		),
 	}
 	for gi, group := range tagglyph.Groups() {
 		kids := make([]ui.Node, 0, 12)
 		for _, g := range tagglyph.In(group) {
-			kids = append(kids, tagGlyphButton(tagID, g.Char, g.Char, glyphName(tr, g), g.Char == current))
+			kids = append(kids, tagGlyphButton(tagID, g.Char, g.Char, glyphName(tr, g), g.Char == current, g.Char == stop))
 		}
 		// Each block of symbols is a group named by the title over it, so a
 		// reader moving through fifty buttons hears "Arrows" as they enter the
@@ -217,7 +234,11 @@ func tagGlyphPicker(tr i18n.Runtime, tagID, current string) ui.Node {
 // a grid of fifty unlabelled symbols is unusable without a pointer and
 // unreadable with a screen reader, and the name is the only thing that tells ◆
 // from ◈ for anyone who cannot see the difference at 13px.
-func tagGlyphButton(tagID, value, shown, name string, pressed bool) ui.Node {
+func tagGlyphButton(tagID, value, shown, name string, pressed, stop bool) ui.Node {
+	tab := "-1"
+	if stop {
+		tab = "0"
+	}
 	return html.Button(html.Props{
 		Class: "ts-glyph",
 		Key:   "tsg-" + value,
@@ -225,6 +246,7 @@ func tagGlyphButton(tagID, value, shown, name string, pressed bool) ui.Node {
 			"data-action":   actTagGlyph,
 			"data-for-item": tagID,
 			"data-value":    value,
+			"tabindex":      tab,
 		},
 		Title: name,
 		Aria:  map[string]string{"pressed": strconv.FormatBool(pressed), "label": name},

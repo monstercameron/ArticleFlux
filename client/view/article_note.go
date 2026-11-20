@@ -81,8 +81,13 @@ func noteSummary(tr i18n.Runtime, it *pb.Item, p articleProps, open bool) ui.Nod
 	// something about this one". Only when closed — open, the textarea below is
 	// already showing it in full and a preview would be the same words twice.
 	if !open && draft != "" {
+		// The cap is a ceiling for a very long note, not the width of the preview: it
+		// was twelve characters, which cut "Before outage…" short on a 820px tablet
+		// with 400px of the row empty beside the chips. The row's own width decides
+		// where the line ends (.note-peek's ellipsis), and a wider cap is what lets
+		// it.
 		row = append(row, html.Span(html.Props{Class: "note-peek"},
-			html.Text(firstWords(draft, 12))))
+			html.Text(firstWords(draft, 160))))
 	}
 
 	// Tags stay on the row in BOTH states. They are one compact line, they are

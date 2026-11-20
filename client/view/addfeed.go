@@ -193,7 +193,7 @@ func addFeedDialog(tr i18n.Runtime, p addFeedProps) ui.Node {
 				Value:       p.url,
 				OnInput:     p.onURLInput,
 				Data:        map[string]string{"role": "add-feed"},
-				Aria:        fieldAria(fieldAddURL, urlHint),
+				Aria:        invalidAria(fieldAria(fieldAddURL, urlHint), p.err != ""),
 				// An address is not prose: a spell checker underlining every
 				// hostname in red is noise on the one field the dialog is for.
 				// "go" because Enter submits the dialog from here.
@@ -346,6 +346,8 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 	default:
 		hint += " " + tr.T("addFeed", "noFeedSmartOffer")
 	}
+	// A live region: the answer arrives after the reader pressed Add, and a
+	// screen reader that heard nothing took "No feed here" for no answer at all.
 	kids := []ui.Node{
 		html.H3(html.Props{Class: "af-ladder-title"}, html.Text(tr.T("addFeed", "noFeedTitle"))),
 		html.Div(html.Props{Class: "af-hint"}, html.Text(hint)),
@@ -354,18 +356,18 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 	case "no_key":
 		kids = append(kids, html.Div(html.Props{Class: "af-note"},
 			html.Text(tr.T("addFeed", "smartNoKey"))))
-		return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
+		return []ui.Node{html.Div(html.Props{Class: "af-ladder", Role: "status"}, kids...)}
 	case "refused":
 		kids = append(kids, html.Div(html.Props{Class: "af-note"},
 			html.Text(tr.T("addFeed", "smartRefused"))))
-		return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
+		return []ui.Node{html.Div(html.Props{Class: "af-ladder", Role: "status"}, kids...)}
 	case "js_rendered":
 		// No lamp, no button, no retry: this one is not a failure to keep
 		// pushing at. Offering "Try again" here would be offering to spend money
 		// on the same answer.
 		kids = append(kids, html.Div(html.Props{Class: "af-note"},
 			html.Text(tr.T("addFeed", "smartJSRendered"))))
-		return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
+		return []ui.Node{html.Div(html.Props{Class: "af-ladder", Role: "status"}, kids...)}
 	case "failed":
 		kids = append(kids, html.Div(html.Props{Class: "af-note"},
 			html.Text(tr.T("addFeed", "smartFailed"))))
@@ -379,7 +381,7 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 	if !p.smartOn {
 		kids = append(kids, html.Div(html.Props{Class: "af-note"},
 			html.Text(tr.T("addFeed", "smartOffHint"))))
-		return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
+		return []ui.Node{html.Div(html.Props{Class: "af-ladder", Role: "status"}, kids...)}
 	}
 
 	// On: the analysis has already run — pressing Add feed with the lamp lit is
@@ -392,7 +394,7 @@ func ladder(tr i18n.Runtime, p addFeedProps) []ui.Node {
 	kids = append(kids, html.Div(html.Props{Class: "af-smart"},
 		kitAction(kitChipProps{Action: actAddAnalyze, Look: kitChipBtn, Extra: "af-retry", Busy: kitTriOf(p.smartBusy), Label: analyze}),
 	))
-	return []ui.Node{html.Div(html.Props{Class: "af-ladder"}, kids...)}
+	return []ui.Node{html.Div(html.Props{Class: "af-ladder", Role: "status"}, kids...)}
 }
 
 // proposalBlock is the model's answer, presented as evidence rather than as a
@@ -621,4 +623,15 @@ func categoryDialog(tr i18n.Runtime, p categoryProps) ui.Node {
 			kitAction(kitChipProps{Action: actCatSave, Look: kitChipBtn, Extra: "af-go", Busy: kitTriOf(p.busy), Label: saveLabel}),
 		),
 	)
+}
+
+// invalidAria marks a field as the one the last refusal was about. The add
+// dialog has one field the server can refuse, so a refusal in the dialog is
+// always about it; without the attribute a screen reader read the error text and
+// then the address as though nothing were wrong with it.
+func invalidAria(a map[string]string, bad bool) map[string]string {
+	if bad {
+		a["invalid"] = "true"
+	}
+	return a
 }

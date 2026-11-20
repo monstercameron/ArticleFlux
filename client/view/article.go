@@ -146,6 +146,9 @@ type articleProps struct {
 	translateOK bool
 	// locale is the language in force, which is what a translation is INTO.
 	locale string
+	// listEmpty is whether the list has loaded and holds no articles at all, so
+	// the empty pane must not tell the reader to move through one (H20).
+	listEmpty bool
 }
 
 // clampWords is where an article stops being scannable.
@@ -165,9 +168,17 @@ func articlePane(tr i18n.Runtime, p articleProps) ui.Node {
 		// The toggle is here too: focus mode survives a scope change, and a
 		// reader who lands on an empty stream with the columns closed needs the
 		// way back to be on screen rather than remembered.
+		//
+		// "Pick something to read — j and k move through the list" is an
+		// instruction about a list that has nothing in it on an empty instance
+		// (H20), so there the pane says so instead and names the way out.
+		title, hint := tr.T("article", "pickTitle"), keyHint(tr, "article", "pickHint")
+		if p.listEmpty {
+			title, hint = tr.T("article", "noneTitle"), tr.T("article", "noneHint")
+		}
 		return html.Main(html.Props{Class: "pane pane-article"},
 			focusPerch(tr, p.focus),
-			kitEmpty(kitEmptyProps{Title: tr.T("article", "pickTitle"), Lines: []string{keyHint(tr, "article", "pickHint")}}),
+			kitEmpty(kitEmptyProps{Title: title, Lines: []string{hint}}),
 		)
 	}
 
@@ -287,6 +298,14 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 		}
 		titleLang = langAttrs(trans.locale)
 	}
+	// Still an <h1> element, announced as a level-2 heading. The reader page's one
+	// real level 1 is the visually-hidden heading readerHeading draws first in the
+	// shell; a stream of articles is a stream of sections under it, and six
+	// level-1s after a list pane's level 2 is an outline that goes 2, 1, 1, 1.
+	// aria-level rather than <h2> because the article CSS and the e2e selectors
+	// all say `.article h1`, and an author-set aria-level overrides the element's
+	// implicit one in every browser's accessibility tree.
+	titleLang["aria-level"] = "2"
 	renderBody := func() ui.Node {
 		if translated {
 			return articleBodyIn(tr, bodyKey(it.GetId(), trans.locale), trans.html, trans.locale)
@@ -363,9 +382,9 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 		// not: a byline and a word count following the reader down the page are
 		// two lines of the window spent restating what they read at the top.
 		html.Div(html.Props{Class: "article-facts"},
-			ui.If(full.GetAuthor() != "", func() ui.Node {
+			ui.If(bareAuthor(full.GetAuthor()) != "", func() ui.Node {
 				return html.Span(html.Props{Class: "article-byline"},
-					html.Text(tr.T("article", "byline", i18n.Args{"author": full.GetAuthor()})))
+					html.Text(tr.T("article", "byline", i18n.Args{"author": bareAuthor(full.GetAuthor())})))
 			}),
 			// Category, its up-to-two secondaries, then genre — facts about where
 			// this piece sits before the actions about what to do with it.
@@ -937,4 +956,16 @@ func parsedBody(id, raw string) ([]ui.Node, bool) {
 	}
 	bodyCache[id] = c
 	return c.nodes, c.empty
+}
+
+// bareAuthor is an author's name without a leading "by ". Some publishers store
+// the whole phrase ("by abnercoimbre", Hacker News's feed), and the byline adds
+// its own, so the page read "by by abnercoimbre" (H21). Done here, at render,
+// rather than only at ingest, because the stored rows already carry it.
+func bareAuthor(a string) string {
+	a = strings.TrimSpace(a)
+	if len(a) >= 3 && strings.EqualFold(a[:3], "by ") {
+		return strings.TrimSpace(a[3:])
+	}
+	return a
 }

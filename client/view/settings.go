@@ -700,7 +700,7 @@ func settingsListening(tr i18n.Runtime, p settingsProps) []ui.Node {
 		kitHeading(glyphListen, tr.T("settings", "voiceGroup"), ""),
 		kitSetting(kitSettingProps{Label: tr.T("settings", "browserVoice"),
 			Hint:    tr.T("settings", "browserVoiceHint"),
-			Control: kitStatic(kitStaticProps{Label: tr.T("settings", "alwaysAvailable")})}),
+			Control: ui.CreateElement(browserVoiceStatus, browserVoiceProps{})}),
 
 		kitHeading(glyphShared, tr.T("settings", "smartGroup"),
 			tr.T("settings", "smartGroupHint")),
@@ -1325,7 +1325,7 @@ func settingsServer(tr i18n.Runtime, p settingsProps) []ui.Node {
 		return []ui.Node{kitAlert("fs-error", p.statsErr)}
 	}
 	if p.loading || p.stats == nil {
-		return kitSkLines("set-sk-", 0, 6, "sk-w-90")
+		return settingsLoading(tr, p.conn)
 	}
 	s := p.stats
 
@@ -1426,7 +1426,7 @@ func settingsActivity(tr i18n.Runtime, p settingsProps) []ui.Node {
 	}
 
 	if p.loading {
-		return append(head, kitSkLines("set-sk-", 0, 6, "sk-w-90")...)
+		return append(head, settingsLoading(tr, p.conn)...)
 	}
 	// Before the empty state, because they are not the same fact and this screen
 	// used to report the wrong one: a failed fetch left `logs` nil and fell
@@ -1519,7 +1519,7 @@ func settingsSpeed(tr i18n.Runtime, p settingsProps) []ui.Node {
 		return []ui.Node{kitAlert("fs-error", p.statsErr)}
 	}
 	if p.loading || p.stats == nil {
-		return kitSkLines("set-sk-", 0, 6, "sk-w-90")
+		return settingsLoading(tr, p.conn)
 	}
 	methods := p.stats.GetMethods()
 	if len(methods) == 0 {
@@ -1674,3 +1674,19 @@ func humanDuration(tr i18n.Runtime, s int64) string {
 
 // slidesHint is the slideshow group's hint, without the key on a touch screen.
 func slidesHint(tr i18n.Runtime) string { return keyHint(tr, "settings", "slidesGroupHint") }
+
+// settingsLoading is what a tab shows while the call behind it has not answered.
+//
+// The loading skeleton while the connection is up, and a sentence when it is not
+// (H16): a call made offline waits for the connection rather than failing, so a
+// tab opened then showed grey bars with nothing to say they were not about to
+// resolve — for as long as the reader was offline, which is as long as they
+// looked. The call is still pending and answers when the connection is back, so
+// the tab fills in by itself; the sentence says that.
+func settingsLoading(tr i18n.Runtime, conn data.ConnState) []ui.Node {
+	if conn == data.Offline || conn == data.Down {
+		return []ui.Node{html.Div(html.Props{Class: "set-note", Role: kitRoleStatus},
+			html.Text(tr.T("settings", "loadOffline")))}
+	}
+	return kitSkLines("set-sk-", 0, 6, "sk-w-90")
+}
