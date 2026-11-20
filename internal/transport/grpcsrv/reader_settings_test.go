@@ -177,7 +177,7 @@ func TestSetNoteEmptyBodyDeletesTheNote(t *testing.T) {
 
 func TestSetNoteTooLongIsInvalidArgument(t *testing.T) {
 	srv, sc, _, _, itemID := newSettingsServer(t)
-	_, err := srv.SetNote(asActor(sc), &pb.SetNoteRequest{ItemId: itemID, Body: strings.Repeat("x", store.MaxNoteBytes+1)})
+	_, err := srv.SetNote(asActor(sc), &pb.SetNoteRequest{ItemId: itemID, Body: strings.Repeat("x", store.MaxNoteChars+1)})
 	if codeOf(err) != codes.InvalidArgument {
 		t.Errorf("SetNote(too long) code = %v, want InvalidArgument", codeOf(err))
 	}

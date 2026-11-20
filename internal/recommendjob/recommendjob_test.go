@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -977,5 +978,67 @@ func TestWebSearchStaysOffWhenTheHarvestAlreadyDelivers(t *testing.T) {
 	if res.Recommended >= WebSearchMinCandidates && res.WebSearched > 0 {
 		t.Errorf("the harvest produced %d recommendations, at or above the threshold, "+
 			"yet a web search still ran", res.Recommended)
+	}
+}
+
+// erroringChecker is a review that cannot run — the shape of a rejected key or an
+// open circuit.
+type erroringChecker struct{ err error }
+
+func (c erroringChecker) Check(context.Context, string, []recommend.Sample, []string, []string) (bool, string, error) {
+	return false, "", c.err
+}
+
+// G9 of the second UX audit: with every relevance check failing ("provider
+// circuit is open"), Discover still showed its suggestions as if reviewed. The
+// job now records that reviews could not run, so the screen can say the
+// suggestions are unreviewed; a run that reviews cleanly, or one with review
+// off, clears it again.
+func TestReviewThatCannotRunIsRecorded(t *testing.T) {
+	f := setup(t)
+	f.val.health["good.example"] = recommend.Health{
+		Reachable: true, HasFeed: true,
+		LastPostAt: now.Add(-2 * 24 * time.Hour), PostsPerWeek: 3,
+		Samples: []recommend.Sample{
+			{Title: "good.example post 1", Summary: "s1"},
+			{Title: "good.example post 2", Summary: "s2"},
+		},
+	}
+	topic := func(context.Context, store.Scope) (string, error) { return "distributed systems", nil }
+	flag := func() string {
+		t.Helper()
+		prefs, err := f.repo.GetPrefs(f.ctx, f.sc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return prefs[ReviewFailedPrefKey]
+	}
+	if err := f.repo.SetPrefs(f.ctx, f.sc, store.Prefs{SmartPlusPrefKey: "true"}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.svc = New(f.repo, f.val, erroringChecker{err: errors.New("llm: the provider circuit is open")}, nil, topic, nil, nil)
+	res := f.run(t)
+	if res.ReviewErrors == 0 || res.Reviewed != 0 {
+		t.Fatalf("ReviewErrors=%d Reviewed=%d, want errors and no reviews", res.ReviewErrors, res.Reviewed)
+	}
+	if got := flag(); got != "true" {
+		t.Errorf("%s = %q after a pass whose reviews all failed, want true", ReviewFailedPrefKey, got)
+	}
+
+	// The provider is back: the next pass reviews cleanly and the flag clears.
+	f.svc = New(f.repo, f.val, &fakeChecker{}, nil, topic, nil, nil)
+	f.run(t)
+	if got := flag(); got != "false" {
+		t.Errorf("%s = %q after a clean pass, want false", ReviewFailedPrefKey, got)
+	}
+
+	// Review switched off: a stale "true" must not survive a pass that never tried.
+	if err := f.repo.SetPrefs(f.ctx, f.sc, store.Prefs{ReviewFailedPrefKey: "true", SmartPlusPrefKey: "false"}); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+	if got := flag(); got != "false" {
+		t.Errorf("%s = %q after a pass with review off, want false", ReviewFailedPrefKey, got)
 	}
 }

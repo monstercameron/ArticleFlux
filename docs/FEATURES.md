@@ -80,7 +80,9 @@ for six rows once at the top beats scrolling back to them.
 - **Streams** — All feeds · Unread · Read later · Liked · Notes
 - **Feeds** — every subscription, alphabetical
 - **Tags** — your per-feed labels
-- **Categories** — folders, each itself a fold
+- **Categories** — folders, each itself a fold. On an instance with no feeds, no folders and nothing
+  unread the band is not drawn: twenty-six empty rows above an empty reader are not something to
+  file. It appears with the first feed, folder or unread article.
 
 **Categories are shown *as well as* the flat feed list, deliberately.** The flat list answers "where
 is that feed"; the categories answer "what have I got on this subject", which 151 flat rows cannot
@@ -164,6 +166,11 @@ dropping it turns direction back into a shrug.
 | Read later | "Nothing saved for later" · *press `t` on an article* |
 | Liked | "Nothing liked yet" · *press `l`, or use ▲ Like* |
 | No articles at all | "No articles yet" · *add a feed URL, then hit Refresh* |
+| A tag or folder address that is not there | "That tag isn't here" / "That folder isn't here" · *All articles* — said once the lists have loaded, on an account with none as on one with some |
+
+**On a phone the keys are not mentioned.** A screen with no keyboard (a coarse pointer) is told the
+same thing in words a finger can follow — *use ▲ Like on an article*, not *press `l`* — through one
+helper, `keyHint`, and a catalog test fails any sentence that names a key without a touch sibling.
 
 ## 4. The article pane is a stream
 
@@ -218,9 +225,12 @@ Under every article: your note, and the feed's tags.
 immediately on `Ctrl+Enter` for anyone who wants it now. Plain `Enter` stays a newline, because a
 note that submits on Enter cannot hold two sentences.
 
-A **sync glyph** reports pending → saving → saved, and speaks in words only when a save *fails*
-("Not saved — still only on this device"). It withholds the tick if typing continued while the write
-was in flight: the one thing it must never do is claim a save that has not landed.
+A **sync glyph** reports pending → saving → saved, and speaks in words only when a save is *not on
+the server* — it failed, or the connection could not carry it ("Not saved — still only on this device",
+visible, not just announced). Offline it says so from the first keystroke and ticks once the outbox has
+drained. It withholds the tick if typing continued while the write was in flight: the one thing it must
+never do is claim a save that has not landed. Closing or reloading the tab inside the 800ms hands what
+is unsaved to the outbox, which is written to storage before the page goes.
 
 **Tags on the article are the *feed's* tags**, and the heading says so in full — removing one from an
 article removes it from the feed. Removal is instant (optimistic, with rollback); **adding shows the
@@ -239,10 +249,15 @@ stops between the rail and the article is not navigation. Focus is read out of t
 tracked in state, so clicking a row and then pressing an arrow continues from the row that was
 clicked.
 
+The **sidebar is one Tab stop**: every row, gear, caret and section button is `tabindex -1` and the
+current row (or the first) is the pane's stop, so Tab reaches Add a feed and the fold button after it,
+not the next of a hundred rows. `↑ ↓` move between rows — from a gear too — and `← →` step between a
+row and its own gear or caret (mirrored in a right-to-left interface).
+
 | Where | Keys |
 |---|---|
 | **Anywhere** | `Ctrl-K` palette · `?` shortcut sheet · `,` settings · `1` `2` `3` jump to rail/list/article · `/` search · `f` filter feeds · `b` fold the feeds away · `r` refresh · `u` unread-only · `s` start slideshow · `Esc` close / stop reading aloud / back |
-| **Feed list** | `↑ ↓` move · `Enter` open |
+| **Feed list** | `↑ ↓` move · `← →` a row's gear / caret · `Enter` open |
 | **Article list** | `↑ ↓` move **and open** · `j` `k` next / previous |
 | **An article** | `o` or `Enter` open original · `l` like · `d` dislike · `t` read later · `U` mark unread · `w` focus mode · `Ctrl-Enter` save the note now |
 | **Slideshow** | `Esc` stop · `Space` pause · `→` / `j` / `n` next · `←` / `k` / `p` previous · `v` toggle voice — every other key is swallowed while it owns the screen |
@@ -250,7 +265,8 @@ clicked.
 Two rules that are easy to get wrong and were:
 
 - **Escape is handled before the is-typing guard.** Otherwise the guard swallows it and the only way
-  out of the search box is the mouse, which in a keyboard-first app is the same as no way out.
+  out of the search box is the mouse, which in a keyboard-first app is the same as no way out. It
+  lands in the list, not on the page, and an armed delete answers it "no" before anything closes.
 - **The list's arrows open as they move.** A reader moving through a list is reading it; arrows that
   only moved focus while `j`/`k` opened would be two behaviours for one gesture.
 
@@ -407,7 +423,8 @@ Two consent conditions are checked at the RPC and neither implies the other: the
 > description of what it does: a feed lives in exactly one of them.
 
 Per-user, **flat**, one category per subscription. Create · rename · delete · file a feed. Reached
-from the rail's Categories band or from the add-a-feed dialog.
+from the rail's Categories band or from the add-a-feed dialog. The band's ＋ opens the editor in its
+*create* shape — nothing exists until a name is saved, so Cancel, Close and Escape leave nothing behind.
 
 Four behaviours that each close a way this goes wrong:
 
@@ -422,6 +439,13 @@ Four behaviours that each close a way this goes wrong:
 
 Names cap at 48 characters (the width the rail draws before ellipsising) and 200 per user. A control
 that silently truncates is worse than one that says no.
+
+**Limits count characters, and a refusal names its limit.** The server counts what a reader can count —
+characters, not the bytes of their UTF-8 — and says which limit it hit, in the reader's language:
+*"A folder name can be up to 48 characters"*, *"A tag can be up to 48 characters"*, *"A tag label can be
+up to 48 characters"*, *"A note can be up to 8000 characters"*; and, for a folder renamed onto another's
+name in any case, *"You already have a folder with that name."* None of these is "Something went wrong
+on the server" any more.
 
 ## 11. Tags
 
@@ -444,8 +468,8 @@ actually for, and what the rules engine and the sync API need — exist in the s
 | **Status** | ✅ |
 | **Spec** | A38 |
 
-- **The tag** — `rust`. What you type, what `SetFeedTag` takes, what the chips under an article say.
-  **Nothing renames it.**
+- **The tag** — `rust`. What you type, what `SetFeedTag` takes, what the chips under an article say
+  (each chip is two buttons: open the tag's stream, remove it from the feed). **Nothing renames it.**
 - **The row** — "Systems programming ⚛". What the rail draws. Renameable, and a **mark** chosen from
   a fifty-glyph catalogue in seven groups.
 
@@ -914,7 +938,11 @@ the motion is the explanation.
 
 **Full width is the means, not the point.** A 66-character column pinned to the left of a 1900px
 window is worse than the three-pane layout it replaced — a stripe of text and an acre of nothing. The
-article recentres, and the nav, the note and the seams move with it.
+article recentres, and the nav, the note and the seams move with it. One published column width
+(`--col`) drives the body, the note under it and the centring gutters, so their edges agree at rest,
+expanded, on a phone and in focus mode. The same centring applies below 1220px, where the article
+replaces the list and would otherwise sit pinned left beside a strip of nothing; three panes keep
+the left alignment on purpose.
 
 The control is **the one piece of bespoke iconography in the application** — four corner brackets
 that pull in and spring out, at 16px. Everything else is a text glyph, deliberately: a row of drawn
@@ -1418,10 +1446,10 @@ and there is no dashboard.** The person running it is the person reading it.
 | **Appearance** | what it looks like | Five theme cards drawn in their own colours · seven accents plus "the theme's own" · three reading sizes with a live specimen · motion: full / reduced / follow the system |
 | **Listening** | what it sounds like, and what leaves the machine | Browser voice (always available) · **Smart+ voice**, with its egress warning attached · **Summarise before reading** · **Join the stories up** · **Keep playing** · the caching note |
 | **FluxCast** | making it a programme | What read-to-me needs, as a checklist with each condition's current state · the broadcast switch and the narrator's manner · where the slideshow's read-to-me requirements are answered |
-| **Smart+** | what it costs | The OpenAI key (stored encrypted, never returned, last four shown) · the model · **tokens in / out / requests since the process started** · the interface-language picker |
+| **Smart+** | what it costs | The OpenAI key (stored encrypted, never returned, last four shown — and **"rejected by OpenAI" beside it when the provider has answered the key with a 401**, where the row and the ladder used to say "configured" and "ready" about a key that did not work) · the model (**blank is the default and saving it says so**; a save always says what it saved) · **tokens in / out / requests since the process started** · the interface-language picker (**a background translation that stops on an error says it stopped**). A Smart+ failure is the provider's, not the connection's: it never repaints the sync indicator. One status line shows at a time, and a refused field is marked invalid and takes focus |
 | **Classification** | which categories I want to see | The 26 categories the free classifier files articles into, each with a show/hide for THIS reader's chips — a view preference, not an edit to the taxonomy, and the hint says so · two Smart+ switches that render disabled, because no RPC backs them yet |
 | **Feeds** | my subscriptions as a whole | Feed count, unread, "N of M loaded" · **Fetch every feed now** · **Mark this list read** · a pointer to the per-feed gear |
-| **Data** | how my feeds get in, and out | **Import OPML**: choose a file, and it subscribes what the file contains · a report — subscribed, already had, categories, already on this server — and **every row that did not make it, named, with its reason** · **Export OPML**: downloads `feeds.opml` with the categories intact |
+| **Data** | how my feeds get in, and out | **Import OPML**: choose a file, and it subscribes what the file contains, **two hundred rows at a time with "n of m" between the calls**, so a 3,000-row list finishes in about a second of server work and always ends in a report (a failed call leaves the report so far, with how far the file got) · a report — **subscribed (new subscriptions only)**, already had, categories, already on this server — and **every row that did not make it, named, with its reason**; a repeat import says *"Nothing new"* instead of repeating the first one's number · **Export OPML**: downloads `feeds.opml` with the categories intact |
 | **Account** | who I am on this server | Signed in as · server · connection · **reconnects**, shown only once one has happened |
 | **Server** | is it healthy | Version · commit · schema migration · uptime · database and WAL size · path · article/note/tag/rated/saved counts · poll interval · last successful fetch · heap, goroutines, GC |
 | **Activity** | what just happened | The in-memory log ring, newest first, with a level filter |

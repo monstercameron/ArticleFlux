@@ -174,7 +174,9 @@ func translateNote(tr i18n.Runtime, id string, p articleProps) ui.Node {
 	switch {
 	case t.state == trFailed:
 		bad = true
-		kids = append(kids, html.Text(tr.T("article", "translateFailed", i18n.Args{"err": t.err})))
+		// The server's own sentence, not wrapped in a second one: every refusal
+		// it can send is already a complete sentence about this article (G17).
+		kids = append(kids, html.Text(t.err))
 	case t.state == trSame:
 		kids = append(kids, html.Text(tr.T("article", "translateSame")))
 	case showingTranslation(t):

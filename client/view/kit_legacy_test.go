@@ -480,13 +480,15 @@ func legacyFeedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
 	// A listitem, because every caller puts it in a railList.
 	return html.Div(html.Props{Class: slot, Role: "listitem", Key: key},
 		html.Button(html.Props{
-			Class: "feed-row",
-			Raw:   props,
-			Data:  map[string]string{"dormant": strconv.FormatBool(dormant)},
-			Aria:  map[string]string{"current": strconv.FormatBool(active), "label": title},
+			Class:    "feed-row",
+			TabIndex: -1,
+			Raw:      props,
+			Data:     map[string]string{"dormant": strconv.FormatBool(dormant)},
+			Aria:     map[string]string{"current": strconv.FormatBool(active), "label": title},
 		}, children...),
 		html.Button(html.Props{
 			Class:     "feed-gear",
+			TabIndex:  -1,
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: "feed-settings"}, {Name: "for-item", Value: f.GetSourceId()}},
 			Title:     tr.T("rail", "settingsFor", i18n.Args{"name": f.GetTitle()}),
 			Aria:      map[string]string{"label": tr.T("rail", "settingsFor", i18n.Args{"name": f.GetTitle()})},
@@ -511,6 +513,7 @@ func legacyTopicRow(tr i18n.Runtime, slug string, active bool, unread int) ui.No
 	return html.Div(html.Props{Class: "feed-slot", Role: "listitem", Key: "topic-" + slug},
 		html.Button(html.Props{
 			Class:    "feed-row topic-row",
+			TabIndex: -1,
 			DataAttr: html.DataAttribute{Name: "category-slug", Value: slug},
 			Aria:     map[string]string{"current": strconv.FormatBool(active), "label": label},
 		},
@@ -541,6 +544,7 @@ func legacyTagRow(tr i18n.Runtime, t *pb.Tag, active bool) ui.Node {
 	return html.Div(html.Props{Class: "feed-slot", Role: "listitem", Key: "tag-" + t.GetId()},
 		html.Button(html.Props{
 			Class:    "feed-row",
+			TabIndex: -1,
 			DataAttr: html.DataAttribute{Name: "tag-id", Value: t.GetId()},
 			Title:    hint,
 			Aria:     map[string]string{"current": strconv.FormatBool(active), "label": hint},
@@ -553,6 +557,8 @@ func legacyTagRow(tr i18n.Runtime, t *pb.Tag, active bool) ui.Node {
 		),
 		html.Button(html.Props{
 			Class:     "feed-gear",
+			TabIndex:  -1,
+			Data:      map[string]string{"role": tagGearRole(t.GetId())},
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: actTagSettings}, {Name: "for-item", Value: t.GetId()}},
 			Title:     tr.T("rail", "settingsFor", i18n.Args{"name": name}),
 			Aria:      map[string]string{"label": tr.T("rail", "settingsFor", i18n.Args{"name": name})},

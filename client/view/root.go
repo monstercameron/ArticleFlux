@@ -353,14 +353,24 @@ func Root() ui.Node {
 	// hyphenation, quotation marks, the spellchecker, and which way the logical
 	// properties the whole sheet is written in actually point.
 	ui.UseEffect(func() func() {
-		platform.SetRootAttr("lang", locale.Get())
+		// lang describes the words on screen; dir describes the layout. They part
+		// company on a language that has been chosen and not yet translated (no
+		// cache, no key): every string is the English fallback, so claiming
+		// French makes a screen reader pronounce English with French rules and
+		// the browser offer to "translate" a page it believes is already in the
+		// reader's language — while the layout really is mirrored, so dir stays
+		// the locale's. One attribute on the root is enough: a catalog that is
+		// partly filled reads as the chosen language, which is most of the text.
+		// A DOM attribute, not a State.Set, so it is safe inside an effect (see
+		// the fill loop above).
+		platform.SetRootAttr("lang", shownLang(locale.Get()))
 		platform.SetRootAttr("dir", string(i18n.DirectionFor(locale.Get())))
 		// And the splash's words, for the next load — see mirrorBootCopy. It
 		// reads through i18n.At rather than a Runtime, because an effect body
 		// runs outside the render and UseI18n is a hook.
 		mirrorBootCopy(i18n.At(locale.Get()))
 		return nil
-	}, []any{locale.Get()})
+	}, []any{locale.Get(), catalogReady.Get()})
 
 	// Every hook above this line runs on every render, unconditionally. The
 	// branch is below, inside the Provider's child, and only chooses which

@@ -133,7 +133,22 @@ func (r keyboardMap) wire() {
 			// only way out of the search box is the mouse, which in a
 			// keyboard-first app is the same as no way out.
 			if k.Typing && k.Name == "Escape" && k.Role != "palette" {
+				// An armed folder delete is the innermost layer, and Escape from the
+				// name field answers it "no" and stops there with focus left in the
+				// field — the same rule the armed button itself follows below (G15).
+				if k.Role == "category-name" && r.act.Get().categoryArmed() {
+					ui.PostAsync(func() { r.act.Get().disarmInline() })
+					return
+				}
 				platform.Blur()
+				if k.Role == "search" {
+					// Out of the search box and into the list it was filtering,
+					// not onto <body> (G14): a blur dropped keyboard focus
+					// nowhere, so the reader's next Tab began again from the top of
+					// the page. The current row wins, so it is where they were; an
+					// empty list leaves the blur as it was.
+					platform.FocusFirst(".list-scroll", ".item-row")
+				}
 				ui.PostAsync(func() {
 					a := r.act.Get()
 					a.closeHelp()
@@ -373,6 +388,22 @@ func (r keyboardMap) wire() {
 				return
 			}
 
+			// Left and right inside the sidebar step across a row's own controls:
+			// the folder's caret, the row, its gear (G10). They are not Tab stops
+			// of their own any more, and this is how a keyboard reader reaches
+			// them. At either end of the group nothing moves and the key is left
+			// to the browser.
+			if (k.Name == "ArrowRight" || k.Name == "ArrowLeft") && platform.FocusedIn(".pane-rail") {
+				toward := 1
+				if k.Name == "ArrowLeft" {
+					toward = -1
+				}
+				if platform.RailMove(".pane-rail", railPrimaryItems, railControlGroups, 0, toward) {
+					preventKey(k)
+				}
+				return
+			}
+
 			// --- arrows, interpreted by whichever r.pane has focus -------------
 			if k.Name == "ArrowDown" || k.Name == "ArrowUp" {
 				delta := 1
@@ -381,7 +412,9 @@ func (r keyboardMap) wire() {
 				}
 				switch {
 				case platform.FocusedIn(".pane-rail"):
-					platform.MoveFocus(".pane-rail", ".feed-row", delta)
+					// From a gear or a caret too: "down" means the next ROW, not the
+					// first one (platform.MoveFocusFrom).
+					platform.RailMove(".pane-rail", railPrimaryItems, railControlGroups, delta, 0)
 					return
 				case platform.FocusedIn(".list-scroll"):
 					// The list's arrows OPEN as they move, because a reader

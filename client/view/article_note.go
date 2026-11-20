@@ -124,6 +124,10 @@ func noteEditor(tr i18n.Runtime, it *pb.Item, p articleProps, draft string) ui.N
 			DataAttr:    html.DataAttribute{Name: "note-id", Value: id},
 			Data:        map[string]string{"role": "note"},
 			Aria:        map[string]string{"label": tr.T("note", "aria")},
+			// The server's own cap, in characters (store.MaxNoteChars): a note past
+			// it was refused with "Couldn't save that note." after the writing was
+			// done (G19). The field stops where the server would.
+			Raw: map[string]any{"maxlength": "8000"},
 		}),
 		// They are the FEED's tags, said plainly here, because a reader removing
 		// one from an article should not be surprised to find it gone from every
@@ -139,6 +143,10 @@ func noteEditor(tr i18n.Runtime, it *pb.Item, p articleProps, draft string) ui.N
 				DataAttr: html.DataAttribute{Name: "tag-source", Value: src},
 				Data:     map[string]string{"role": "tag"},
 				Aria:     map[string]string{"label": tr.T("note", "tagAria")},
+				// Stops at the store's cap instead of letting the reader type 105
+				// characters into a field that then says only "Couldn't add that
+				// tag." (G19).
+				Raw: map[string]any{"maxlength": strconv.Itoa(maxNameChars)},
 			}),
 			kitAction(kitChipProps{Action: "add-tag", Label: tr.T("note", "addTag"), ItemID: id}),
 		),
@@ -161,11 +169,23 @@ func noteSyncMark(tr i18n.Runtime, state string) ui.Node {
 		return nil
 	}
 	glyph, label := glyphSyncing, tr.T("note", "saving")
+	// The two states that are NOT on the server say so in visible words (G11),
+	// where they were a glyph and a screen-reader-only sentence: during an outage
+	// the mark was a small spinner reading "Saving…" for as long as it lasted,
+	// which is the opposite of the truth. Failed (the server refused) and queued
+	// (kept on this device, going out when the connection returns) share the
+	// sentence, because what a reader may need to do about either is the same.
+	words := false
 	switch state {
 	case noteSyncSaved:
 		glyph, label = glyphSynced, tr.T("note", "saved")
-	case noteSyncFailed:
+	case noteSyncFailed, noteSyncQueued:
 		glyph, label = glyphSyncFailed, tr.T("note", "notSaved")
+		words = true
+	}
+	wordsClass := "sr"
+	if words {
+		wordsClass = "sync-words"
 	}
 	return html.Span(html.Props{
 		Class: "note-sync",
@@ -178,7 +198,7 @@ func noteSyncMark(tr i18n.Runtime, state string) ui.Node {
 	},
 		html.Span(html.Props{Class: "sync-gl",
 			Aria: map[string]string{"hidden": "true"}}, html.Text(glyph)),
-		html.Span(html.Props{Class: "sr"}, html.Text(label)),
+		html.Span(html.Props{Class: wordsClass}, html.Text(label)),
 	)
 }
 
@@ -244,23 +264,32 @@ func tagChip(tr i18n.Runtime, t tagRef, itemID string) ui.Node {
 	// Keyed by the NAME, which is the stable identity: keying by the label would
 	// remount every chip for a tag the moment it was renamed.
 	//
-	// data-tag-id sits on the LABEL, data-action="remove-tag" on the X — two
-	// sibling hit targets, not one attribute stacked on the wrapping element.
-	// Both are delegated via closest(), and closest() from a click on the label
-	// would also match a data-action carried by an ANCESTOR, firing the remove
-	// alongside the navigate. Keeping them on siblings instead of nesting one
-	// inside the other's ancestor chain is what keeps the two clicks distinct.
-	return html.Button(html.Props{
+	// TWO sibling BUTTONS inside a span, not one button holding a span-×. That
+	// first shape had Enter on the chip do nothing (data-tag-id sat on a child
+	// span, and a key press only clicks the focused element), left a keyboard
+	// reader no way to remove a tag at all (the × was tabindex -1), and gave the
+	// chip the accessible name "label×". Now each half is a real control with its
+	// own name and its own Tab stop, and the × is a 24px square (G4).
+	//
+	// data-tag-id sits on the OPEN button, data-action="remove-tag" on the remove
+	// button — siblings, never one inside the other's ancestor chain. Both are
+	// delegated via closest(), and a data-action on an ANCESTOR of the label
+	// would fire the remove alongside the navigate.
+	return html.Span(html.Props{
 		Class: "chip chip-mini tag-chip",
 		Key:   "tag-" + t.Name,
-		Title: tr.T("note", "tagOpen", i18n.Args{"tag": t.Label}),
 	},
-		html.Span(html.Props{DataAttr: html.DataAttribute{Name: "tag-id", Value: t.ID}}, html.Text(t.Label)),
-		html.Span(html.Props{
+		html.Button(html.Props{
+			Class:    "tag-open",
+			Type:     "button",
+			Title:    tr.T("note", "tagOpen", i18n.Args{"tag": t.Label}),
+			DataAttr: html.DataAttribute{Name: "tag-id", Value: t.ID},
+		}, html.Text(t.Label)),
+		html.Button(html.Props{
 			Class:     "tag-x",
+			Type:      "button",
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: "remove-tag"}, {Name: "for-item", Value: itemID}, {Name: "value", Value: t.Name}},
 			Aria:      map[string]string{"label": tr.T("note", "tagRemoveAria", i18n.Args{"tag": t.Label})},
-		},
-			html.Text(glyphRemove)),
+		}, html.Span(html.Props{Aria: map[string]string{"hidden": "true"}}, html.Text(glyphRemove))),
 	)
 }

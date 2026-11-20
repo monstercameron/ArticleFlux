@@ -50,6 +50,16 @@ func langCoverage(locale string) (done, total int) {
 	return total - len(i18n.Missing(locale)), total
 }
 
+// shownLang is the language of the words actually on screen for a chosen
+// locale: the locale once any of its catalog is in force, English while none
+// is. It is what <html lang> must say — see Root.
+func shownLang(locale string) string {
+	if done, _ := langCoverage(locale); done > 0 && locale != "" {
+		return locale
+	}
+	return i18n.DefaultLocale
+}
+
 // isOwnerRole mirrors the server's owner check (grpcsrv's ownerRoles), for the
 // one decision the client makes with it: whether to ask the server to SPEND on
 // filling a language. Asking without the role is harmless — the server ignores

@@ -27,11 +27,14 @@ func TestListRecommendationsWithNoRepoWiredReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestRefreshRecommendationsWithNoRecommenderWiredIsUnavailable(t *testing.T) {
+func TestRefreshRecommendationsWithNoRecommenderWiredIsUnimplemented(t *testing.T) {
 	srv, _, _ := subscribeFixture(t)
 	_, err := srv.RefreshRecommendations(context.Background(), &pb.RefreshRecommendationsRequest{})
-	if status.Code(err) != codes.Unavailable {
-		t.Errorf("code = %v, want Unavailable when no recommender is wired", status.Code(err))
+	// Unimplemented, not Unavailable: the client's connection tracker reads every
+	// Unavailable as the transport dropping, and "this server does not have the
+	// feature" is a fact about the deployment, not about the link (G2's class).
+	if status.Code(err) != codes.Unimplemented {
+		t.Errorf("code = %v, want Unimplemented when no recommender is wired", status.Code(err))
 	}
 }
 
@@ -154,4 +157,39 @@ func TestRefreshRecommendationsEnqueuesAJob(t *testing.T) {
 		t.Errorf("JobRecommend queue depth = %+v, want 1 queued after RefreshRecommendations", depth[store.JobRecommend])
 	}
 	_ = sc
+}
+
+// G9: the list says when the last pass could not review — but only while the
+// reader still has review on, because the flag outlives the switch.
+func TestListRecommendationsSaysWhenReviewCouldNotRun(t *testing.T) {
+	srv, sc, repo, _ := subscribeNetFixture(t)
+	srv.WithRecommendations(repo, nil)
+	ctx := context.Background()
+	unavailable := func() bool {
+		t.Helper()
+		res, err := srv.ListRecommendations(ctx, &pb.ListRecommendationsRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.GetReviewUnavailable()
+	}
+	set := func(review, failed string) {
+		t.Helper()
+		if err := repo.SetPrefs(ctx, sc, store.Prefs{
+			recommendjob.SmartPlusPrefKey: review, recommendjob.ReviewFailedPrefKey: failed}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set("true", "false")
+	if unavailable() {
+		t.Error("ReviewUnavailable with a clean last pass")
+	}
+	set("true", "true")
+	if !unavailable() {
+		t.Error("ReviewUnavailable missing after a pass whose reviews could not run")
+	}
+	set("false", "true")
+	if unavailable() {
+		t.Error("ReviewUnavailable shown with Smart+ review switched off")
+	}
 }

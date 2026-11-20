@@ -2,12 +2,17 @@ package grpcsrv
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/monstercameron/ArticleFlux/client/data"
+	"github.com/monstercameron/ArticleFlux/client/design"
+	"github.com/monstercameron/ArticleFlux/internal/llm"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 	"github.com/monstercameron/ArticleFlux/internal/store"
 )
@@ -134,5 +139,85 @@ func TestTranslateArticleWithNoReaderRepoIsOff(t *testing.T) {
 	_, err := s.TranslateArticle(context.Background(), &pb.TranslateArticleRequest{ItemId: "x", Locale: "fr"})
 	if detailKey(t, err) != "srv.articleTranslateOff" {
 		t.Errorf("err = %v (%s)", err, detailKey(t, err))
+	}
+}
+
+// TestAProviderFailureIsNeverUnavailable pins G2 of the second UX audit. The
+// wasm client reads every codes.Unavailable as "the transport dropped" and
+// repaints the list header and the search dot, so a bad key on a Smart+ call
+// made the whole app say the connection was gone while the server answered. A
+// provider's failure, and the breaker being open, are application answers;
+// each keeps its catalog key (the message is unchanged) and carries a code the
+// tracker leaves alone.
+func TestAProviderFailureIsNeverUnavailable(t *testing.T) {
+	s := bareSmartServer()
+	cases := []struct {
+		name string
+		err  error
+		key  string
+	}{
+		{"article, provider failed", s.articleErr("fr", errors.New("provider returned 401")), "srv.articleTranslateFailed"},
+		{"article, breaker open", s.articleErr("fr", llm.ErrCircuitOpen), "srv.smartUnavailable"},
+		{"interface, provider failed", s.localeErr("fr", errors.New("provider returned 401")), "srv.translateFailed"},
+		{"interface, breaker open", s.localeErr("fr", llm.ErrCircuitOpen), "srv.smartUnavailable"},
+		{"theme, provider failed", s.themeErr(errors.New("provider returned 401"), "t"), "srv.themeFailed"},
+		{"theme, not a palette", s.themeErr(design.ErrNotAPalette, "t"), "srv.themeNotAPalette"},
+		{"theme, breaker open", s.themeErr(llm.ErrCircuitOpen, "t"), "srv.smartUnavailable"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := status.Code(c.err); got == codes.Unavailable {
+				t.Fatalf("code = Unavailable; the client would call this a dropped connection")
+			}
+			if got := detailKey(t, c.err); got != c.key {
+				t.Errorf("key = %q, want %q", got, c.key)
+			}
+			// What the connection tracker will make of it, end to end.
+			if v := data.Classify(c.err); v.Class != data.ClassApplication {
+				t.Errorf("Classify = %v, want ClassApplication", v.Class)
+			}
+		})
+	}
+}
+
+// G18 of the second UX audit: with a key the provider refuses, the interface
+// language picker said "0 of 1,519 translated. Translating the rest…" and then
+// just stopped at "0 of 1,519 translated." — the background fill's failure went
+// to the log and nowhere the reader could see. The read after a failed fill now
+// says "failed", and a request that asks for a fill starts another attempt
+// instead of being told the old news.
+func TestAFillThatFailedIsReportedOnTheNextRead(t *testing.T) {
+	sc := ownerScope("admin")
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusUnauthorized, map[string]any{
+			"error": map[string]string{"message": "Incorrect API key provided"},
+		}), nil
+	})
+	s := listModelsServer(t, sc, rt)
+	ctx := context.Background()
+
+	res, err := s.GetUIStrings(ctx, &pb.GetUIStringsRequest{Locale: "fr", Fill: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.GetFilling() {
+		t.Fatalf("the fill did not start: reason=%q pending=%d", res.GetIdleReason(), res.GetPending())
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		res, err = s.GetUIStrings(ctx, &pb.GetUIStringsRequest{Locale: "fr"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.GetFilling() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fill never stopped")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if res.GetIdleReason() != "failed" || res.GetPending() == 0 {
+		t.Errorf("after a failed fill: reason=%q pending=%d, want failed and some pending", res.GetIdleReason(), res.GetPending())
 	}
 }

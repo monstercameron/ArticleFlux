@@ -21,6 +21,8 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
 // ConnState is what the always-visible indicator shows.
@@ -191,6 +193,16 @@ func Classify(err error) Verdict {
 		// Unavailable is §20.7's "circuit open, degraded mode, storage
 		// read-only" as well as a dead socket — both are "try again later",
 		// which is what the indicator says.
+		//
+		// Except one that answered in the provider's name. The server gave a
+		// Smart+ failure this code until the second UX audit (G2) and a
+		// breaker-open Smart+ call still gets it from the generic taxonomy; the
+		// server was reached and replied, so the connection is exactly as good
+		// as it was. A reply with no catalog key (a proxy's 503, a dead socket)
+		// is still the transport.
+		if st.Code() == codes.Unavailable && answeredForProvider(st) {
+			return Verdict{Class: ClassApplication}
+		}
 		return Verdict{Class: ClassTransport}
 
 	case codes.Unauthenticated:
@@ -221,6 +233,28 @@ func Classify(err error) Verdict {
 		// works, not evidence that it does not.
 		return Verdict{Class: ClassApplication}
 	}
+}
+
+// providerKeys are the catalog keys of the refusals that speak for a Smart+
+// provider and not for the connection. The strings are the wire contract (the
+// client cannot import grpcsrv), pinned against the server by a test there.
+var providerKeys = map[string]bool{
+	"srv.smartUnavailable":       true,
+	"srv.translateFailed":        true,
+	"srv.articleTranslateFailed": true,
+	"srv.themeFailed":            true,
+	"srv.themeNotAPalette":       true,
+}
+
+// answeredForProvider reports whether an Unavailable status carries one of
+// providerKeys in its ErrorDetail — i.e. this server built it.
+func answeredForProvider(st *status.Status) bool {
+	for _, d := range st.Details() {
+		if detail, ok := d.(*pb.ErrorDetail); ok && providerKeys[detail.GetKey()] {
+			return true
+		}
+	}
+	return false
 }
 
 // retryAfterOf pulls §20.7's `retry_after_s` out of a status message.

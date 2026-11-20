@@ -23,6 +23,10 @@ const (
 // settingsHave reports which of those fetches have already landed.
 type settingsHave struct {
 	stats, myFeed, smart bool
+	// owner is whether the account may read the Smart+ config at all. A member's
+	// request is refused, so asking for the Discover tab's sake would re-ask on
+	// every visit and answer nothing.
+	owner bool
 }
 
 // settingsNeeds is what must be fetched for tab, given what is already held.
@@ -39,6 +43,12 @@ func settingsNeeds(tab settingsTab, have settingsHave) []settingsNeed {
 	case setMyFeed:
 		if !have.myFeed {
 			return []settingsNeed{needMyFeed}
+		}
+	case setDiscover:
+		// Whether the server has a key decides whether Smart+ review is offered at
+		// all, and only an owner can be told.
+		if !have.smart && have.owner {
+			return []settingsNeed{needSmart}
 		}
 	case setSmart, setPodcast:
 		// FluxCast reads the config too: its server-key row is a fact about the

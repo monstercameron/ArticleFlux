@@ -470,13 +470,15 @@ func hoursUntil(ts string) int {
 // stream — which shows articles from several feeds at a time and would otherwise
 // resolve the same id→tag table once per article on screen.
 //
-// Both names, not one: the chip DRAWS the label and ACTS on the name. SetFeedTag
-// is keyed by name (a tag is created on first use and removed with its last
-// association, so the name is the handle a reader actually has), while the label
-// is what the same tag reads as everywhere else once it has been renamed for the
-// rail. Collapsing the two into one string would mean either chips that
-// contradict the sidebar or a remove that asks the server to take off a tag it
-// has never heard of.
+// The chip DRAWS the tag's NAME, not its sidebar label (G3). A tag and its
+// row are two different things (FEATURES 11a): the label belongs to the rail, and
+// the tag settings dialog promises that the name is what the chips under an
+// article say. Drawing the label had a renamed tag read "Systems stuff" under
+// the article and in the remove button's accessible name, and the tag field
+// beside it still wanted "rust". SetFeedTag is keyed by name too, so the chip
+// now says the one word a reader can both read and type. Label and Name stay two
+// fields (they are equal for a settled chip) so the pending chip, which has only
+// what was typed, keeps its shape.
 func tagLabelsBySource(tags []*pb.Tag, bySource map[string][]string,
 	pending map[string][]string) map[string][]tagRef {
 
@@ -492,15 +494,14 @@ func tagLabelsBySource(tags []*pb.Tag, bySource map[string][]string,
 		refs := make([]tagRef, 0, len(ids))
 		for _, id := range ids {
 			if t := byID[id]; t != nil {
-				refs = append(refs, tagRef{Label: tagDisplay(t), Name: t.GetName(), ID: t.GetId()})
+				refs = append(refs, tagRef{Label: t.GetName(), Name: t.GetName(), ID: t.GetId()})
 			}
 		}
 		// Stable order, because these are chips with a destructive control on
 		// them: a row that reshuffles between renders moves the × out from under
 		// the pointer, and the tag that gets removed is the one that slid into
 		// its place. Map iteration above orders the FEEDS, which nothing reads;
-		// this orders what is drawn — so it sorts on the LABEL, which is what is
-		// drawn, rather than on the name, which is not.
+		// this orders what is drawn — which is the name.
 		sort.Slice(refs, func(i, j int) bool { return refs[i].Label < refs[j].Label })
 		if len(refs) > 0 {
 			out[src] = refs

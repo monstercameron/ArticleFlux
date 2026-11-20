@@ -259,6 +259,24 @@ test.describe('the address bar', () => {
     await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
   });
 
+  // A tag or a folder is judged only once its list has arrived, and an account
+  // with none must still get the answer: an empty list used to mean "not loaded
+  // yet", so /tag/zzz on such an account read as a tag with nothing in it.
+  for (const [route, noun] of [['/tag/zzz', 'tag'], ['/category/zzz', 'folder']]) {
+    test(`an address naming a ${noun} that is not there says so, and offers All articles`, async ({ page }) => {
+      await page.goto(route);
+      await signIn(page);
+      await expect(page.locator('.shell')).toBeVisible({ timeout: 60_000 });
+
+      const list = page.locator('.pane-list');
+      await expect(list.locator('.list-title')).toHaveText('Not found', { timeout: 30_000 });
+      await expect(list.locator('.empty')).toContainText(`That ${noun} isn't here`);
+      await list.locator('.empty button', { hasText: 'All articles' }).click();
+      await expect(list.locator('.list-title')).toHaveText('All articles');
+      await expect(page.locator('.item-row').first()).toBeVisible({ timeout: 30_000 });
+    });
+  }
+
   test('an address this build cannot read resumes the saved place', async ({ page }) => {
     await boot(page);
     await openFeed(page, /Alpha Journal/);

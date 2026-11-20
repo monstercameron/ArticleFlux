@@ -599,7 +599,7 @@ func listSubtitle(tr i18n.Runtime, p listProps) string {
 		// sel.Unread here this fell through to subUnreadCount/subNewest,
 		// which describe an UNfiltered list — "Newest first" under a list
 		// that is, in fact, unread-only.
-		sub = tr.T("list", "subUnread")
+		sub = keyHint(tr, "list", "subUnread")
 	// The count belongs to the WHOLE ACCOUNT, so only the whole account may
 	// quote it.
 	//
@@ -1145,7 +1145,7 @@ func emptyState(tr i18n.Runtime, titleKey, hintKey string) ui.Node {
 	// of a pane that has nothing else in it, and a heading with no section
 	// under it is structure for its own sake.
 	ns := tr.NS("list")
-	return kitEmpty(kitEmptyProps{Title: ns.T(titleKey), Lines: []string{ns.T(hintKey)}})
+	return kitEmpty(kitEmptyProps{Title: ns.T(titleKey), Lines: []string{keyHint(tr, "list", hintKey)}})
 }
 
 // spawnStaggerCap is how many 26ms steps an arriving page may be spread over.

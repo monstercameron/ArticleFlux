@@ -56,6 +56,18 @@ func init() {
 		"reference":  "{message} (reference {id})",
 		"notFound":   "That could not be found.",
 		"saveFailed": "Couldn't save that.",
+		// What a reader typed was refused for its size or its name (G7, G19 of
+		// the second UX audit). Each names the limit, because "couldn't save
+		// that" gives no way to fix it; {max} is a count of CHARACTERS, which is
+		// what the reader can count. The ones without {max} are byte-identical
+		// to the server's fallbacks, as the paired test requires.
+		"folderNameEmpty":   "A folder needs a name.",
+		"folderNameTooLong": "A folder name can be up to {max} characters.",
+		"folderNameTaken":   "You already have a folder with that name.",
+		"tagEmpty":          "A tag needs a name.",
+		"tagTooLong":        "A tag can be up to {max} characters.",
+		"tagLabelTooLong":   "A tag label can be up to {max} characters.",
+		"noteTooLong":       "A note can be up to {max} characters.",
 		// The paging cursor no longer matches the list. Never an empty page:
 		// a client reading that as "the end" silently truncates (§20.7).
 		"staleCursor": "This page cursor is out of date. Reloading the list.",

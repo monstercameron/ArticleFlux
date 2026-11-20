@@ -1,6 +1,16 @@
 package design
 
-import "github.com/monstercameron/GoWebComponents/v7/css"
+import (
+	"strconv"
+
+	"github.com/monstercameron/GoWebComponents/v7/css"
+)
+
+// readSourceMix is how far a READ row's source name moves from its hue toward
+// --mute, in percent — the recede that used to be opacity .6 (G13). Chosen as
+// the largest share that keeps the name at AA at every hue in every theme;
+// hue_contrast_test.go measures that.
+const readSourceMix = 60
 
 // Sheet authors the entire reader in Go and emits it into GWC's sink.
 //
@@ -153,6 +163,34 @@ func touch(r func(string, string) css.Rule) {
 	css.Global(".field", css.Media(coarse, css.MinHeight(css.Px(40)))...)
 	css.Global(".chip:not(.chip-icon)", css.Media(coarse, css.MinHeight(css.Px(36)))...)
 	css.Global(".chip.chip-mini:not(.chip-icon)", css.Media(coarse, css.MinHeight(css.Px(32)))...)
+	// Not a target, so not sized like one: a fact the reader cannot press gets no
+	// tap height, and a 36px pill beside 36px buttons is how a word count came to
+	// look pressable. After the two rules above, which it must beat.
+	css.Global(".chip.chip-static:not(.chip-icon)", css.Media(coarse, css.MinHeight(css.Zero))...)
+	// The sidebar's controls and the small buttons, which measured 7-31px on a
+	// phone with rows 28px tall and 1px apart (G23): feed and tag gears 20x20,
+	// folder carets 18x20, the band actions 24px high, the tag chip's × 7x13, the
+	// rows themselves 28. WCAG 2.5.8 is 24, and 24 beside a 28px row of neighbours
+	// is a target a thumb misses. Coarse pointers ONLY — a mouse keeps the dense
+	// sidebar it has always had. Few rules on purpose: each one is bytes in a
+	// bundle that is ratcheted.
+	css.Global(".feed-row, .rail-band-toggle, .rail-band-act", css.Media(coarse, css.MinHeight(css.Px(40)))...)
+	// 40, because the resting gear is drawn at 82% (motion.go): 33px on screen.
+	css.Global(".feed-gear", css.Media(coarse, css.W(css.Px(40)), css.H(css.Px(40)),
+		css.FontSize(css.Px(14)))...)
+	// The row reserves room for the gear so a count does not slide under it.
+	css.Global(".feed-gap", css.Media(coarse, css.W(css.Px(40)))...)
+	css.Global(".cat-caret", css.Media(coarse, css.W(css.Px(28)), css.H(css.Px(36)))...)
+	css.Global(".rail-band-act", css.Media(coarse, css.MinWidth(css.Px(36)),
+		css.Display.InlineFlex, css.Items.Center, css.Justify.Center)...)
+	// A bare text button: padding out and margin back, as it already does for its
+	// 24px on a mouse, only further.
+	css.Global(".note-toggle", css.Media(coarse, r("padding", "10px 0"), r("margin", "-10px 0"))...)
+	// The round icon buttons are 32px on a mouse; a fingertip needs the 40 the
+	// step buttons and the fields already use.
+	css.Global(".chip-icon", css.Media(coarse, css.W(css.Px(40)), css.H(css.Px(40)))...)
+	// The tag chip's × was the smallest target in the app.
+	css.Global(".tag-x", css.Media(coarse, css.MinWidth(css.Px(32)), css.MinHeight(css.Px(32)))...)
 }
 
 func base(r func(string, string) css.Rule) {
@@ -660,8 +698,16 @@ func list(r func(string, string) css.Rule) {
 	// the value discover.go's buttons already fade to, so this is the existing
 	// treatment reaching the control vocabulary rather than a new one.
 	css.Global(".chip:disabled", r("opacity", ".5"), css.Cursor.Default)
-	css.Global(".chip-static", css.Cursor.Default)
-	css.Global(".chip-static:hover", css.TextColor(css.Var("soft")), css.BorderColor(css.Var("line")))
+	// A static chip is a fact — "1,420 words", "Preparing…" — and has to read as
+	// one in every theme. It shared the pressable chip's border, which on a pale
+	// ground (Daylight) and under a finger (no hover to tell the two apart) made
+	// the word count look like the button beside it. No outline and no fill — it
+	// keeps its box, so nothing around it moves — and no pressed or hover
+	// response; touch() takes its tap height off too.
+	css.Global(".chip-static",
+		css.Cursor.Default, r("background", "transparent"), css.BorderColor(css.Transparent),
+	)
+	css.Global(".chip-static:hover", css.TextColor(css.Var("soft")), css.BorderColor(css.Transparent))
 	// 24px tall at the least. The padding alone made these 22, which is under
 	// the smallest target WCAG 2.2 accepts (2.5.8, 24 by 24) on the controls a
 	// reader presses most often in Settings — and two pixels is the difference
@@ -932,7 +978,16 @@ func reader(r func(string, string) css.Rule) {
 	// the container's scrollTop. Without it offsets are measured against the
 	// document and "which article am I reading" is answered wrong on every
 	// scroll — silently, because the numbers are still plausible.
-	css.Global(".pane-article", css.MinWidth(css.Zero), css.Position.Relative)
+	// The reading column's width, published once so that everything which has to
+	// line up with it reads the same number: the body, the note under it, and the
+	// gutters that centre it. 66 characters of the reading face is 38.3 times its
+	// font size, and the size is written here rather than as `66ch` because a
+	// `ch` is measured in the font of the element it appears on — the note is set
+	// in the interface face, so its 66ch was 607px under a 689px column. On a
+	// phone the body is 17px whatever the reader's size preference says (see the
+	// narrow-screen rule below), and the column follows it.
+	css.Global(".pane-article", css.MinWidth(css.Zero), css.Position.Relative,
+		css.Custom("col", "calc(var(--rd-size) * 38.3)"))
 
 	css.Global(".article-nav", r("padding", "18px 60px 0"))
 
@@ -1009,7 +1064,15 @@ func reader(r func(string, string) css.Rule) {
 		r("font-size", "clamp(30px, 3.4vw, 44px)"),
 		css.LineHeight(css.Num(1.1)), css.FontWeight.Semibold,
 		r("letter-spacing", "-.03em"), r("margin", "20px 0 0"),
-		css.MaxWidth(css.Ch(18)), css.OverflowWrap.Anywhere,
+		css.OverflowWrap.Anywhere,
+		// A box of its own width with its END margin auto, rather than a max-width
+		// on an auto-width block: an auto-width block is placed by the direction
+		// of the CONTAINER, so in a right-to-left interface an English headline's
+		// box sat against the right edge with its text starting at the left of it,
+		// 200px off the body's edge. The margin is resolved by the headline's own
+		// direction (dir="auto", set in article.go), so the box goes to the side
+		// its text starts from.
+		css.W(css.Percent(100)), r("max-width", "18ch"), r("margin-inline-end", "auto"),
 	)
 
 	// Facts and actions share one pill vocabulary, because they answer the same
@@ -1129,7 +1192,7 @@ func reader(r func(string, string) css.Rule) {
 	// paragraph a notch larger and brighter — a lede, which is how a reader says
 	// "start here".
 	css.Global(".article-body",
-		r("padding", "14px 0 56px"), css.MaxWidth(css.Ch(66)),
+		r("padding", "14px 0 56px"), r("max-width", "var(--col, 66ch)"),
 		// Both tokens: the size is a reader preference (Appearance → Reading
 		// size) and the colour belongs to the theme. 18px and #E4DCEC are still
 		// what an unconfigured Fanciful install renders.
@@ -1185,8 +1248,13 @@ func reader(r func(string, string) css.Rule) {
 
 	// The note panel borrows the mockup's `.tidy` card: a bordered, rounded well
 	// on the raised surface.
+	//
+	// No margin of its own beside the column: it is a child of .article, whose
+	// padding is already the gutter, and a second 60px put the card's edge 60px
+	// inside the text above it and a fixed 66ch (of the smaller interface face)
+	// stopped it 80px short on the right. Same width as the body, same edges.
 	css.Global(".article-note",
-		r("margin", "0 60px 56px"), css.MaxWidth(css.Ch(66)),
+		r("margin", "0 0 56px"), r("max-width", "var(--col, 66ch)"),
 		css.Border(css.Px(1), css.Var("line")), css.Rounded(css.Px(16)),
 		r("background", "var(--sur)"), r("padding", "20px 22px"),
 	)
@@ -1329,7 +1397,14 @@ func reader(r func(string, string) css.Rule) {
 	// The same two colours the connection dot uses for live and down. A reader
 	// only has to learn "green is fine, warm is not" once.
 	css.Global(".note-sync[data-sync='saved']", css.TextColor(css.Var("pos")))
-	css.Global(".note-sync[data-sync='failed']", css.TextColor(css.Var("neg")))
+	css.Global(".note-sync[data-sync='failed'], .note-sync[data-sync='queued']", css.TextColor(css.Var("neg")))
+	// The words beside the glyph for the two unsaved states (G11). They may wrap
+	// rather than push the row's toggle and chips out of the card.
+	css.Global(".sync-words",
+		r("margin-inline-start", "6px"), css.FontSize(css.Px(12)), css.LineHeight(css.Num(1.25)),
+		css.TextAlign.End, r("max-width", "26ch"),
+	)
+	css.Global(".note-sync:has(.sync-words)", r("align-items", "flex-start"))
 
 	// The tags already on this feed. Above the add field, because they are the
 	// answer to "is it already tagged" — which is the question you ask before
@@ -1341,21 +1416,39 @@ func reader(r func(string, string) css.Rule) {
 	css.Global(".tag-chip",
 		css.Display.InlineFlex, css.Items.Center, css.Gap(css.Px(6)),
 	)
+	// The chip is a span holding TWO buttons (open, remove — G4), so the padding
+	// moves off the chip and onto the halves: the chip keeps its outline and the
+	// buttons keep the whole inside as their hit area. The × is a 24px square at
+	// the least (WCAG 2.5.8) where it was a 7x13 glyph; it overlaps the chip's
+	// own end padding instead of adding to it, so the chip does not grow wider
+	// than the 9px it had.
+	css.Global(".tag-chip", r("padding", "0"), css.Overflow.Hidden)
+	css.Global(".tag-open",
+		r("padding-block", "2px"), r("padding-inline-start", "9px"), css.MinHeight(css.Px(24)),
+		css.Display.InlineFlex, css.Items.Center, css.FontSize(css.Px(11)),
+	)
 	css.Global(".tag-x",
 		css.TextColor(css.Var("mute")), css.FontSize(css.Px(13)), css.LineHeight(css.Num(1)),
+		css.MinWidth(css.Px(24)), css.MinHeight(css.Px(24)),
+		css.Display.InlineFlex, css.Items.Center, css.Justify.Center,
+		r("margin-inline-start", "-2px"),
+	)
+	// The halves have their own focus ring, inset: the chip clips its overflow
+	// (rounded ends), which would cut the global 3px-offset ring in half.
+	css.Global(".tag-open:focus-visible, .tag-x:focus-visible",
+		css.OutlineOffset(css.Px(-2)),
 	)
 	// The × warms on hover rather than the whole chip lighting up: the label and
-	// the × are two separate hit targets now (label opens the tag view, × still
-	// removes), so a hover over the label must not read as "this will delete" —
-	// only a hover that actually lands on the × does.
-	css.Global(".tag-chip:hover .tag-x", css.TextColor(css.Var("neg")))
+	// the × are two separate hit targets (label opens the tag view, × removes), so
+	// a hover over the label must not read as "this will delete" — only a hover
+	// that actually lands on the × does.
+	css.Global(".tag-x:hover, .tag-x:focus-visible", css.TextColor(css.Var("neg")))
 	css.Global(".tag-chip:has(.tag-x:hover)", css.BorderColor(css.Var("neg")))
 	css.Global(".tag-chip .tag-x", css.Cursor.Pointer)
 	// The label half: underline on hover is the one thing left to say "this is
 	// its own click", now that it can no longer borrow the chip-wide red warmth.
-	css.Global(".tag-chip [data-tag-id]",
-		css.Cursor.Pointer, r("text-decoration", "none"))
-	css.Global(".tag-chip [data-tag-id]:hover", r("text-decoration", "underline"))
+	css.Global(".tag-open", css.Cursor.Pointer, r("text-decoration", "none"))
+	css.Global(".tag-open:hover", r("text-decoration", "underline"))
 
 	// A tag that has been applied but not yet acknowledged.
 	//
@@ -1365,7 +1458,7 @@ func reader(r func(string, string) css.Rule) {
 	// and it costs no colour, which matters on a chip row that already spends its
 	// one warm colour on the destructive hover above.
 	css.Global(".tag-chip-pending",
-		r("opacity", ".62"), css.BorderStyle(css.LineDashed), css.Cursor.Default,
+		r("padding", "2px 9px"), r("opacity", ".62"), css.BorderStyle(css.LineDashed), css.Cursor.Default,
 	)
 	// No destructive affordance while pending: there is nothing on the server to
 	// remove yet, and a chip that warms red on hover is promising an action it
@@ -1515,7 +1608,13 @@ func verdicts(r func(string, string) css.Rule) {
 	// Read rows recede as a whole: the hue bar fades with the title, so a read
 	// row is quieter in every channel at once rather than half-dimmed.
 	css.Global(".item-row[data-age='read']::before", r("opacity", ".35"))
-	css.Global(".item-row[data-age='read'] .item-source", r("opacity", ".6"))
+	// By a mix toward --mute, not by opacity (G13): an opacity of .6 over the
+	// ground put the name at 3.8-4.0:1 in Ink, Ledger and Contrast. --mute clears
+	// AA on every ground by TestEveryThemeIsReadable, and a hue mixed toward it
+	// stays between the two, so the recede is kept and the floor is too —
+	// hue_contrast_test.go measures it at every hue.
+	css.Global(".item-row[data-age='read'] .item-source",
+		r("color", "color-mix(in oklab, var(--ink, var(--soft)), var(--mute) "+strconv.Itoa(readSourceMix)+"%)"))
 	// An unread row a month old gets the same treatment WITHOUT being read: it is
 	// still unread, and the "stale" tag says why it looks tired.
 	css.Global(".item-row[data-age='stale'] .item-title", css.TextColor(css.Var("soft")))
@@ -1759,7 +1858,7 @@ func nowPlayingCSS(r func(string, string) css.Rule) {
 		css.Position.Fixed,
 		// Centred by transform rather than by `left: 50%; margin-left: -Wpx`,
 		// because the width depends on the title and is not knowable here.
-		r("left", "50%"), css.Transform(css.TranslateX(css.Percent(-50))),
+		r("left", "50%"), r("transform", "translateX(calc(-50% + var(--np-shift, 0px)))"),
 		css.Bottom(css.Px(18)), css.ZIndex(45),
 		css.Display.Flex, css.Items.Center, css.Gap(css.Px(14)),
 		r("max-width", "min(680px, calc(100vw - 32px))"),
@@ -1786,9 +1885,31 @@ func nowPlayingCSS(r func(string, string) css.Rule) {
 	// state is the end state, so nothing moves and nothing flashes.
 	npRise := css.Keyframes("np-rise",
 		css.At("0%", r("opacity", "calc(1 - var(--mo))"),
-			r("transform", "translateX(-50%) translateY(calc(var(--mo) * 12px))")),
-		css.At("100%", css.OpacityNum(css.Num(1)), css.Transform(css.TranslateX(css.Percent(-50)), css.TranslateY(css.Zero))),
+			r("transform", "translateX(calc(-50% + var(--np-shift, 0px))) translateY(calc(var(--mo) * 12px))")),
+		css.At("100%", css.OpacityNum(css.Num(1)),
+			r("transform", "translateX(calc(-50% + var(--np-shift, 0px))) translateY(0)")),
 	)
+	// Centred on the READING column, not on the window (G22). Centred on the
+	// window it sat half over the list pane at desktop widths (x 460-975 of 1440),
+	// covering the rows a reader steps through while listening. The shift is how
+	// far the reading column's centre is from the window's: half of everything
+	// to its left, signed by --dirx so a right-to-left interface, whose panes run
+	// the other way, moves the bar to the other side. It is a custom property so
+	// the one transform above reads it and no breakpoint has to restate it.
+	css.Global(".np", css.Custom("np-shift",
+		"calc((var(--w-rail) + var(--w-list) + "+GripWidth+" * 2) / 2 * var(--dirx, 1))"))
+	// The list slides over the reading column below 1220px, so only the rail is
+	// to its left; below 900px there is one column and the window's centre is it.
+	css.Global(".np", css.Media(css.MaxW(1220),
+		css.Custom("np-shift", "calc((var(--w-rail) + "+GripWidth+") / 2 * var(--dirx, 1))"))...)
+	css.Global(".np", css.Media(css.MaxW(900), css.Custom("np-shift", "0px"))...)
+	// A folded rail leaves a strip rather than its width; focus mode leaves no
+	// panes at all.
+	css.Global(".shell[data-rail='folded'] .np", css.Media(css.MinW(901),
+		css.Custom("np-shift", "calc("+RailPeek+" / 2 * var(--dirx, 1))"))...)
+	css.Global(".shell[data-rail='folded'] .np", css.Media(css.MinW(1221),
+		css.Custom("np-shift", "calc(("+RailPeek+" + var(--w-list) + "+GripWidth+") / 2 * var(--dirx, 1))"))...)
+	css.Global(".shell[data-focus='true'] .np", css.Custom("np-shift", "0px"))
 	css.Global(".np", npRise,
 		r("animation-duration", "var(--t2)"),
 		r("animation-timing-function", "var(--e-out)"),
@@ -2301,10 +2422,6 @@ func discoverCSS(r func(string, string) css.Rule) {
 		css.Display.Flex, css.Items.Start,
 		css.Justify.Between, css.Gap(css.Px(16)),
 	)
-	css.Global(".discover-title",
-		css.Font(css.VarFontStack("dsp")), css.FontSize(css.Px(20)),
-		css.FontWeight.Medium, css.TextColor(css.Var("cream")), css.Margin(css.Zero),
-	)
 	css.Global(".discover-hint",
 		css.Font(css.VarFontStack("rd")), css.FontSize(css.Px(13)),
 		css.LineHeight(css.Num(1.5)), css.TextColor(css.Var("mute")),
@@ -2323,7 +2440,16 @@ func discoverCSS(r func(string, string) css.Rule) {
 	css.Global(".discover-refresh:hover:not(:disabled)",
 		r("background", "var(--cc)"), css.TextColor(css.Var("bg")),
 	)
-	css.Global(".discover-refresh:disabled", css.OpacityNum(css.Num(0.5)))
+	// Disabled is NEUTRAL, not the amber outline at half strength (G24): drawn in
+	// the accent it still looked like the one thing on the page to press, on a
+	// control that could not be. Line and muted text are what every other
+	// disabled control here becomes.
+	css.Global(".discover-refresh:disabled",
+		css.BorderColor(css.Var("line")), css.TextColor(css.Var("mute")), css.Cursor.Default)
+	// The sentence under the head after a Follow or a Not for me. Quiet, and it
+	// takes no room while empty.
+	css.Global(".discover-said", css.FontSize(css.Px(13)), css.TextColor(css.Var("soft")))
+	css.Global(".discover-said:not(:empty)", r("margin", "10px 0 0"))
 	css.Global(".discover-head-actions",
 		css.Display.Flex, css.Items.Center, css.Gap(css.Px(8)), r("flex", "none"),
 	)
@@ -3109,7 +3235,24 @@ func responsive(r func(string, string) css.Rule) {
 	css.Global(".article-step", css.Media(css.MaxW(900),
 		r("order", "-1"), r("margin-inline-start", "0"))...)
 	css.Global(".article-body", css.Media(css.MaxW(900), css.FontSize(css.Px(17)))...)
-	css.Global(".article-note", css.Media(css.MaxW(900), r("margin", "0 18px 40px"))...)
+	css.Global(".article-note", css.Media(css.MaxW(900), r("margin", "0 0 40px"))...)
+	css.Global(".pane-article", css.Media(css.MaxW(900), css.Custom("col", "calc(17px * 38.3)"))...)
+	// The reading column centres in the pane wherever the pane is wider than the
+	// column needs and nothing is beside it. Below 1220px the article replaces the
+	// list (design/filmstrip.go), so what is left of a tablet's width after the
+	// column was a strip of nothing down the right-hand side of a column pinned
+	// to the left — the same picture focus mode centres its way out of
+	// (design/focus.go), for the same reason. Three panes at desktop width keep
+	// the left alignment, deliberately: there the list is the thing on the left
+	// and the article reads as its continuation.
+	//
+	// Emitted after the phone padding above so its `padding` shorthand does not
+	// reset this, and as a max() so the gutter can only grow from the 60px (18px
+	// on a phone) the article already had.
+	css.Global(".article", css.Media(css.MaxW(1220),
+		r("padding-inline", "max(var(--art-pad), calc((100% - var(--col)) / 2))"))...)
+	css.Global(".article-nav, .stream-edge", css.Media(css.MaxW(1220),
+		r("padding-inline", "max(60px, calc((100% - var(--col)) / 2))"))...)
 	css.Global(".list-head", css.Media(css.MaxW(900), r("padding", "20px 16px 14px"))...)
 	// The list's chip row is one row that scrolls sideways on a phone, as the
 	// article's action bar is, and for the same reason: wrapped, the four chips

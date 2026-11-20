@@ -36,7 +36,22 @@ type Folder struct {
 // MaxFolderName bounds a category name at the width the rail can draw before it
 // ellipsises. Longer names are not wrong, they are just invisible past this
 // point, and a control that silently truncates is worse than one that says no.
+// Counted in characters (see textlimits.go).
 const MaxFolderName = 48
+
+// checkFolderName trims a folder's name and refuses one that is empty or over
+// the limit, with the typed error the transport can say in words. Shared by the
+// create and rename paths so the two cannot disagree about what a name is.
+func checkFolderName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	switch {
+	case name == "":
+		return "", &TextError{Subject: SubjectFolder, Problem: ProblemEmpty}
+	case chars(name) > MaxFolderName:
+		return "", &TextError{Subject: SubjectFolder, Problem: ProblemTooLong, Max: MaxFolderName}
+	}
+	return name, nil
+}
 
 // MaxFoldersPerUser bounds the taxonomy, exactly as MaxTagsPerUser does. A
 // sidebar of 200 categories is not an organised sidebar, and the cap is what
@@ -93,13 +108,13 @@ func (r *ReaderRepo) CreateFolder(ctx context.Context, s Scope, name string) (Fo
 	if !s.Valid() {
 		return Folder{}, ErrNoScope
 	}
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > MaxFolderName {
-		return Folder{}, fmt.Errorf("store: a category must be 1-%d characters", MaxFolderName)
+	name, err := checkFolderName(name)
+	if err != nil {
+		return Folder{}, err
 	}
 
 	var out Folder
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+	err = r.db.Tx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, `
 			SELECT id, name, position FROM folders
 			 WHERE user_id = ? AND tenant_id = ? AND lower(name) = lower(?)`,
@@ -158,13 +173,13 @@ func (r *ReaderRepo) RenameFolder(ctx context.Context, s Scope, folderID, name s
 	if folderID == "" {
 		return Folder{}, ErrNotFound
 	}
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > MaxFolderName {
-		return Folder{}, fmt.Errorf("store: a category must be 1-%d characters", MaxFolderName)
+	name, err := checkFolderName(name)
+	if err != nil {
+		return Folder{}, err
 	}
 
 	var out Folder
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+	err = r.db.Tx(ctx, func(tx *sql.Tx) error {
 		// Ownership first, and it doubles as the existence check. A folder id
 		// belonging to someone else returns ErrNotFound rather than a permission
 		// error (§20.7): a distinct error would confirm the row exists.
@@ -188,7 +203,10 @@ func (r *ReaderRepo) RenameFolder(ctx context.Context, s Scope, folderID, name s
 			s.UserID, s.TenantID, name, folderID).Scan(&clash)
 		switch {
 		case err == nil:
-			return fmt.Errorf("store: there is already a category called %q", name)
+			// Typed, because the reader must be told in words, in their own
+			// language, that the name is taken — not "Something went wrong on the
+			// server" (G7): see TextError.
+			return &TextError{Subject: SubjectFolder, Problem: ProblemTaken}
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}

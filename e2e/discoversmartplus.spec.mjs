@@ -1,4 +1,4 @@
-import { test, expect, boot } from './fixtures.mjs';
+import { test, expect, boot, storeFakeKey } from './fixtures.mjs';
 
 /**
  * Discover's Smart+ review switch: it turns on, and it stays on.
@@ -23,7 +23,10 @@ import { test, expect, boot } from './fixtures.mjs';
 const TOGGLE = '[data-discover-smartplus]';
 
 async function openDiscover(page) {
-  await page.locator('button[title="Discover"], [aria-label="Discover"]').first().click();
+  // The review switch is offered only where the server has a key; the harness
+  // has none, so a placeholder is stored first (see storeFakeKey).
+  await storeFakeKey(page);
+  await page.locator('[data-action="settings-tab"][data-value="discover"]').click();
   await expect(page.locator('#discover-page')).toBeVisible();
 }
 

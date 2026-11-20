@@ -26,6 +26,11 @@ func init() {
 		// answer without those two facts.
 		"keyClearWarn":    "Every Smart+ feature stops until a key is added again. This screen cannot show you this key, so keep a copy if you mean to put it back.",
 		"keyClearConfirm": "Remove the key",
+		// The provider answered the stored key with a 401 or 403 (G9). The state
+		// line says it in a few words; the note says what it means and what to do,
+		// because "configured" beside a key that does not work is the lie.
+		"keyRejected":     "rejected by OpenAI",
+		"keyRejectedNote": "OpenAI refused this key, so every Smart+ feature will fail until it is replaced. Paste a working key above.",
 
 		"stateConfigured":    "configured",
 		"stateNotConfigured": "not configured",
@@ -60,6 +65,9 @@ func init() {
 		"rungReady":    "ready",
 		"rungNoKey":    "no key",
 		"rungNeedsURL": "needs the proxy's address",
+		// The OpenAI key is present and the provider refused it — "ready" would
+		// be untrue (G9).
+		"rungRejected": "key rejected",
 
 		// --- the JEV key, beside the OpenAI one and treated the same way
 		"jevGroup":        "JEV decision key",
@@ -102,12 +110,19 @@ func init() {
 		"memberLangNone":     "None yet — the interface is in English until an administrator translates it.",
 
 		// --- the model
-		"modelGroup":     "Model",
-		"modelLabel":     "Model",
-		"modelHint":      "One model for every Smart+ feature, so what they cost can be compared. Leave it blank for the default.",
-		"modelAria":      "Smart+ model",
-		"modelDefault":   "Default: {model}",
-		"modelSave":      "Save model",
+		"modelGroup":   "Model",
+		"modelLabel":   "Model",
+		"modelHint":    "One model for every Smart+ feature, so what they cost can be compared. Leave it blank for the default.",
+		"modelAria":    "Smart+ model",
+		"modelDefault": "Default: {model}",
+		// The picker's own entry for the default, first in the list.
+		"modelDefaultOption": "Default ({model})",
+		"modelSave":          "Save model",
+		// The confirmation a model save never had (G8). {model} is the model now
+		// in force — the default's own name after a reset, so "blank means the
+		// default" is shown to have worked and not just claimed.
+		"modelSaved":     "Model saved: {model}.",
+		"modelReset":     "Model reset to the default: {model}.",
 		"modelUseCustom": "Type a model id instead",
 		"modelUseList":   "Choose from the list instead",
 
@@ -177,7 +192,7 @@ func init() {
 		// A member's device reads cached translations but cannot pay for new
 		// ones; the server ignores the request and says so. Names who CAN.
 		"langNotOwner":        "Only an administrator can translate the rest. Until then it shows in English.",
-		"langFillFailed":      "Couldn't fetch the rest just now; it shows in English until next time.",
+		"langFillFailed":      "Translating stopped before it finished — the rest shows in English. If your OpenAI key is rejected, replace it in Settings › Smart+, then choose the language again.",
 		"langRetranslate":     "Translate again",
 		"langRetranslateHint": "Fetches a fresh translation for the language in use, replacing the cached one. Use it when something reads wrong. The page reloads when it is done.",
 		// The picker paints on Appearance, so "above" — where this used to

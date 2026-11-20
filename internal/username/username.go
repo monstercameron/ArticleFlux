@@ -27,7 +27,6 @@ package username
 import (
 	"errors"
 	"fmt"
-	"net/mail"
 	"strings"
 	"unicode"
 )
@@ -86,20 +85,23 @@ func Check(s string) error {
 	if strings.IndexFunc(s, unicode.IsSpace) >= 0 {
 		return ErrDisplayName
 	}
-	addr, err := mail.ParseAddress(s)
-	if err != nil {
-		return ErrNotMail
-	}
-	// ParseAddress returns the address without decoration; if that differs from
-	// what was handed in, the input carried something extra.
-	if addr.Address != s {
-		return ErrDisplayName
+	// The address grammar itself, where there is a parser to ask (grammar is
+	// build-tagged: see grammar_full.go and grammar_js.go for why the browser
+	// does not carry one).
+	if err := grammar(s); err != nil {
+		return err
 	}
 	// One `@`, and something either side of it. ParseAddress is looser than the
 	// intuition here — it accepts forms nothing will deliver to — and the point
 	// of this rule is a reachable human, not conformance to the grammar.
 	at := strings.LastIndexByte(s, '@')
 	if at <= 0 || at == len(s)-1 {
+		return ErrNotMail
+	}
+	// Two separators. The parser has already refused this wherever there is a
+	// parser (and refused the one legal form of it, a quoted local part, as
+	// decoration); it is restated so the build without one refuses it too.
+	if strings.Count(s, "@") > 1 {
 		return ErrNotMail
 	}
 	// A domain with no dot is a local hostname (`cam@laptop`), which parses and

@@ -119,6 +119,27 @@ const (
 	fieldCatName  = "cat-name"
 )
 
+// catNewID is the category editor's id while it is making a folder rather than
+// editing one (G6). A sentinel in the same slot a real id would occupy, for
+// unfiledID's reason: the dialog is open exactly when the id is non-empty, and
+// nothing has to exist on the server for it to be. It cannot collide with a
+// folder id, which are uuids.
+const catNewID = "+new"
+
+// maxNameChars is the longest a folder name or a tag may be, as the field's
+// maxlength (G19). It mirrors store.MaxFolderName and the tag cap in
+// store.SetFeedTag — the client cannot import the store, so the number is
+// repeated here, and a field that stops typing at the limit is kinder than a
+// sentence after the fact. The server stays the authority.
+const maxNameChars = 48
+
+// maxlengthAttr is the Raw attribute that stops a field at the limit.
+func maxlengthAttr() map[string]any {
+	m := renameAttrs()
+	m["maxlength"] = strconv.Itoa(maxNameChars)
+	return m
+}
+
 // unfiledID is the sentinel for feeds with no category.
 //
 // A sentinel rather than a nil group, because "Unfiled" is a place a reader
@@ -516,7 +537,10 @@ type categoryProps struct {
 	busy    bool
 	err     string
 	confirm bool
-	onInput ui.Handler
+	// creating is the same dialog in its "new folder" shape: no folder exists yet,
+	// so there is nothing to delete and the primary button creates (G6).
+	creating bool
+	onInput  ui.Handler
 }
 
 const (
@@ -538,26 +562,52 @@ func categoryDialog(tr i18n.Runtime, p categoryProps) ui.Node {
 		fate = tr.T("category", "fate", i18n.Count(p.feeds))
 	}
 
-	arm := kitArm(kitArmProps{Armed: p.confirm,
+	// The length is said in the hint, after what deleting costs (or alone when
+	// there is nothing to delete yet), because the server's refusal arrives only
+	// after the press (G19).
+	limit := tr.T("category", "limit", i18n.Args{"max": strconv.Itoa(maxNameChars)})
+	title, saveLabel, hint := p.name, tr.T("category", "save"), fate+" "+limit
+	if p.creating {
+		title, saveLabel, hint = tr.T("category", "titleNew"), tr.T("category", "create"), limit
+	}
+
+	// DataArmed stamps data-armed on the armed button, which is what the shared
+	// Escape and press-outside rules look for (armedInlineSelector): Escape on the
+	// armed delete now answers "no" and leaves the dialog open, and a press in the
+	// name field disarms it (G15) — the first only closed the whole dialog, the
+	// second left it armed.
+	arm := kitArm(kitArmProps{Armed: p.confirm, DataArmed: true,
 		Action: actCatDelete, ArmedAction: actCatConfirm,
 		Label: tr.T("category", "delete"), ArmedLabel: tr.T("category", "confirm"),
 		Look: kitChipBtn, Danger: true,
 		Warn: tr.T("category", "confirmWarn", i18n.Args{"name": p.name}), WarnClass: "af-warn"})
+	// Nothing to delete until the folder exists. nil, not omitted: the foot's
+	// children are positional.
+	var del ui.Node = arm.Button
+	if p.creating {
+		del = nil
+	}
+
+	fieldARIA := fieldAria(fieldCatName, hint)
+	if p.err != "" {
+		// The refused field says so itself, not only the sentence below it (G19).
+		fieldARIA["invalid"] = "true"
+	}
 
 	return kitDialog(kitDialogProps{Open: p.open, CloseAction: actCatClose,
 		Class: "af af-narrow", Title: tr.T("category", "title")},
-		kitDialogHead(kitDialogHeadProps{Prefix: "af", Title: p.name,
+		kitDialogHead(kitDialogHeadProps{Prefix: "af", Title: title,
 			Close: kitDialogClose("af", actCatClose, "", tr.T("category", "close"))}),
 		kitDialogBody("af",
-			kitField(kitFieldProps{Look: kitFormDialog, Label: tr.T("category", "nameLabel"), Hint: fate, ID: fieldCatName,
+			kitField(kitFieldProps{Look: kitFormDialog, Label: tr.T("category", "nameLabel"), Hint: hint, ID: fieldCatName,
 				Control: html.Input(html.Props{
 					Class: "field af-input", Type: "text", ID: fieldCatName,
 					Placeholder: p.name,
 					Value:       p.draft,
 					OnInput:     p.onInput,
 					Data:        map[string]string{"role": "category-name"},
-					Aria:        fieldAria(fieldCatName, fate),
-					Raw:         renameAttrs(),
+					Aria:        fieldARIA,
+					Raw:         maxlengthAttr(),
 				})}),
 		),
 		kitDialogFoot("af", []ui.Node{kitFieldError(kitFormDialog, p.err),
@@ -565,10 +615,10 @@ func categoryDialog(tr i18n.Runtime, p categoryProps) ui.Node {
 			// next press on the red button does, and somebody who cannot see
 			// its label change has to be told before they press it again.
 			arm.Warn},
-			arm.Button,
+			del,
 			html.Div(html.Props{Class: "af-spring"}),
 			kitAction(kitChipProps{Action: actCatClose, Look: kitChipBtn, Extra: "btn-ghost", Label: tr.T("category", "cancel")}),
-			kitAction(kitChipProps{Action: actCatSave, Look: kitChipBtn, Extra: "af-go", Busy: kitTriOf(p.busy), Label: tr.T("category", "save")}),
+			kitAction(kitChipProps{Action: actCatSave, Look: kitChipBtn, Extra: "af-go", Busy: kitTriOf(p.busy), Label: saveLabel}),
 		),
 	)
 }

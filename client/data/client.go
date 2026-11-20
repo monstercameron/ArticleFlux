@@ -917,24 +917,28 @@ func (c *Client) SubscribeScrape(parent context.Context, indexURL, title, folder
 	return res, c.track(err)
 }
 
-// ImportOPML subscribes to a whole OPML file (F1).
+// ImportOPMLChunk subscribes to rows [start, start+max) of an OPML file (F1).
 //
 // Refused offline for Subscribe's reason and more of it: the server validates
 // and stores every row, so there is nothing a disconnected client could
 // optimistically show. Queuing 151 subscriptions that may each fail is not an
 // offline feature, it is a report the reader would have to read twice.
 //
-// The long budget is the import's own: subscribing does not fetch, but it is
-// still one transaction per feed against SQLite plus the categories, and a
-// hundred and fifty of those on a loaded server outlast the default.
-func (c *Client) ImportOPML(parent context.Context, data []byte) (*pb.ImportOpmlResponse, error) {
+// One call is one chunk, with the long budget of its own: the server writes a
+// hundred rows to a transaction, but on a loaded server even a few hundred
+// outlast the default. The whole file used to be ONE call under this same
+// deadline, and a 3,000-row list outlasted it — cancelled half way, no report
+// (G1). The caller walks the file (see MergeImport); each answer says where the
+// file stands.
+func (c *Client) ImportOPMLChunk(parent context.Context, data []byte, start, max int) (*pb.ImportOpmlResponse, error) {
 	if c.State() != Live {
 		return nil, ErrOffline
 	}
 	ctx, cancel := context.WithTimeout(parent, 120*time.Second)
 	defer cancel()
-	res, err := c.reader.ImportOpml(ctx, &pb.ImportOpmlRequest{Opml: data},
-		grpc.WaitForReady(false))
+	res, err := c.reader.ImportOpml(ctx, &pb.ImportOpmlRequest{
+		Opml: data, Start: int32(start), MaxRows: int32(max),
+	}, grpc.WaitForReady(false))
 	return res, c.track(err)
 }
 
@@ -1124,6 +1128,21 @@ func (c *Client) SetNote(parent context.Context, itemID, body string) error {
 		return err
 	}
 	return nil
+}
+
+// QueueNote keeps a note write for the next load, WITHOUT sending it, and does
+// so synchronously.
+//
+// It is for the tab that is closing: a request started from pagehide is not
+// guaranteed to leave, but the outbox is written to localStorage before this
+// returns, and loadOutbox replays it when the page next opens (G20). Text typed
+// in the last 800ms before a reload used to be lost, because the debounce had
+// not fired and nothing flushed it.
+func (c *Client) QueueNote(itemID, body string) {
+	_ = c.queue(outbox.Op{
+		Key:  "note-" + itemID + "-" + strconv.FormatInt(nowMS(), 36),
+		Kind: outbox.KindNote, ItemID: itemID, Note: &body, At: nowMS(),
+	})
 }
 
 // ListNotes returns everything this user has annotated.

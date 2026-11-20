@@ -41,6 +41,10 @@ import (
 // and DemoProps do — the connection is dialled once, above this component.
 type DiscoverProps struct {
 	Client *data.Client
+	// NoKey is the server reporting it has no model key, so Smart+ review cannot
+	// run: the switch is not offered and the page says why, the way the add-a-feed
+	// dialog stops recommending Smart+ follow once the server has said no_key.
+	NoKey bool
 }
 
 // Delegated-click attributes (§ "GWC delegated click payload" — a per-row
@@ -49,7 +53,11 @@ type DiscoverProps struct {
 // listeners, registered once, read it — the same pattern reader_clicks.go
 // uses for item rows, at client/platform.OnDelegatedClick.
 const (
-	attrDiscoverAccept    = "data-discover-accept"
+	attrDiscoverAccept = "data-discover-accept"
+	// The data-roles focus is handed to when a card leaves (G14): the card that
+	// takes its place, or Refresh when it was the last.
+	roleDiscoverFollow    = "rec-follow-"
+	roleDiscoverRefresh   = "discover-refresh"
 	attrDiscoverReject    = "data-discover-reject"
 	attrDiscoverRefresh   = "data-discover-refresh"
 	attrDiscoverSmartPlus = "data-discover-smartplus"
@@ -108,7 +116,7 @@ func sameDomainSet(a, b map[string]bool) bool {
 func pollDiscoverUntilChanged(
 	c *data.Client, g int, before map[string]bool,
 	gen ui.Ref[int], recs ui.State[[]*pb.Recommendation],
-	refreshing, loading ui.State[bool],
+	refreshing, loading, reviewDown ui.State[bool],
 ) {
 	for attempt := 0; ; attempt++ {
 		time.Sleep(pollDiscoverInterval)
@@ -129,6 +137,7 @@ func pollDiscoverUntilChanged(
 			changed := !sameDomainSet(before, domainSet(after))
 			if changed || done {
 				recs.Set(after)
+				reviewDown.Set(res.GetReviewUnavailable())
 				refreshing.Set(false)
 				loading.Set(false)
 			}
@@ -178,6 +187,12 @@ func Discover(p DiscoverProps) ui.Node {
 	refreshing := ui.UseState(false)
 	loadErr := ui.UseState(false)
 	recs := ui.UseState([]*pb.Recommendation(nil))
+	// reviewDown is the server saying the last pass could not run Smart+'s
+	// review on some of what it scored, so those suggestions stand on rungs
+	// 1-3's evidence alone (G9). Without it they read as reviewed — the toggle
+	// is on, the cards say "posts reviewed" for the ones that were, and nothing
+	// marks the rest.
+	reviewDown := ui.UseState(false)
 	// busy holds the domain currently mid-Accept/Reject, so its own two
 	// buttons disable without freezing every other card on the list.
 	busy := ui.UseState("")
@@ -189,6 +204,9 @@ func Discover(p DiscoverProps) ui.Node {
 	// removeDomain drops it from recs.
 	leaving := ui.UseState("")
 	leavingKind := ui.UseState("")
+	// said is the sentence for the last Follow or Not for me, in a live region
+	// that is always in the document (G26). Cleared by the next action.
+	said := ui.UseState("")
 	// gen guards against a stale response landing after a newer request —
 	// the same discipline loadFolders uses in reader.go, needed here because
 	// Refresh can be clicked again before the first load returns.
@@ -245,6 +263,7 @@ func Discover(p DiscoverProps) ui.Node {
 					return
 				}
 				recs.Set(res.GetRecommendations())
+				reviewDown.Set(res.GetReviewUnavailable())
 			})
 		}()
 	}
@@ -333,12 +352,43 @@ func Discover(p DiscoverProps) ui.Node {
 
 	removeDomain := func(domain string) {
 		out := make([]*pb.Recommendation, 0, len(recs.Get()))
-		for _, r := range recs.Get() {
+		at := -1
+		for i, r := range recs.Get() {
 			if r.GetDomain() != domain {
 				out = append(out, r)
+			} else {
+				at = i
 			}
 		}
+		// Focus was on the card's own button, and the card is about to leave: it
+		// would fall to <body> and a keyboard reader would start from the top of
+		// the page (G14). Hand it to the card that takes this one's place — or,
+		// with none left, to Refresh. Only when focus IS lost: a reader who has
+		// already moved on keeps where they went.
+		lost := !platform.FocusedIn("#app") || platform.FocusedIn(".discover-card[data-leaving]")
 		recs.Set(out)
+		if lost && at >= 0 {
+			role := roleDiscoverRefresh
+			if len(out) > 0 {
+				if at >= len(out) {
+					at = len(out) - 1
+				}
+				role = roleDiscoverFollow + out[at].GetDomain()
+			}
+			platform.FocusField(role)
+		}
+	}
+	// nameOf is how a sentence refers to a recommendation: its title, or its
+	// domain when the site has none.
+	nameOf := func(domain string) string {
+		for _, r := range recs.Get() {
+			if r.GetDomain() == domain {
+				if t := r.GetTitle(); t != "" {
+					return t
+				}
+			}
+		}
+		return domain
 	}
 
 	ui.UseEffect(func() func() {
@@ -433,7 +483,7 @@ func Discover(p DiscoverProps) ui.Node {
 					// Poll instead, until the open set actually changes or a
 					// generous ceiling is hit — 2s * 10 covers a slow validating
 					// fetch of someone else's server without hanging forever.
-					pollDiscoverUntilChanged(c, g, before, gen, recs, refreshing, loading)
+					pollDiscoverUntilChanged(c, g, before, gen, recs, refreshing, loading, reviewDown)
 				}()
 			})
 		})
@@ -448,11 +498,14 @@ func Discover(p DiscoverProps) ui.Node {
 					return
 				}
 				busy.Set(domain)
+				said.Set("")
+				name := nameOf(domain)
 				go func() {
 					_, err := c.AcceptRecommendation(context.Background(), domain)
 					ui.PostAsync(func() {
 						busy.Set("")
 						if err == nil {
+							said.Set(tr.T("discover", "followed", i18n.Args{"name": name}))
 							playDiscoverLeave(domain, "accept", leaving, leavingKind, removeDomain)
 						}
 					})
@@ -470,11 +523,14 @@ func Discover(p DiscoverProps) ui.Node {
 					return
 				}
 				busy.Set(domain)
+				said.Set("")
+				name := nameOf(domain)
 				go func() {
 					err := c.RejectRecommendation(context.Background(), domain)
 					ui.PostAsync(func() {
 						busy.Set("")
 						if err == nil {
+							said.Set(tr.T("discover", "dismissed", i18n.Args{"name": name}))
 							playDiscoverLeave(domain, "reject", leaving, leavingKind, removeDomain)
 						}
 					})
@@ -486,27 +542,55 @@ func Discover(p DiscoverProps) ui.Node {
 
 	return html.Div(html.Props{ID: "discover-page", Class: "discover-page"},
 		html.Div(html.Props{Class: "discover-head"},
-			html.Div(html.Props{},
-				html.H1(html.Props{Class: "discover-title"}, html.Text(tr.T("discover", "title"))),
-				html.P(html.Props{Class: "discover-hint"}, html.Text(tr.T("discover", "hint"))),
-			),
-			html.Div(html.Props{Class: "discover-head-actions"},
-				discoverSmartPlusToggle(tr, smartPlus.Get(),
-					smartPlusBusy.Get() || !prefsLoaded.Get()),
-				html.Button(html.Props{
-					Type: "button", Class: "discover-refresh",
-					// Refreshing a list that isn't loaded is a no-op with a
-					// spinner — disabled until the gate is open, not just until
-					// prefs answer, so it can't be pressed mid-"we don't know
-					// yet" either.
-					Disabled: refreshing.Get() || !smartPlus.Get(),
-					Raw:      map[string]any{attrDiscoverRefresh: "1"},
-				}, html.Text(refreshLabel(tr, refreshing.Get()))),
-			),
+			// The same group heading every other Settings tab opens with, not a
+			// display-size title of its own: Discover was the one tab that looked
+			// like a different screen.
+			kitHeading(glyphDiscover, tr.T("discover", "title"), tr.T("discover", "hint")),
+			ui.If(!p.NoKey, func() ui.Node {
+				return html.Div(html.Props{Class: "discover-head-actions"},
+					discoverSmartPlusToggle(tr, smartPlus.Get(),
+						smartPlusBusy.Get() || !prefsLoaded.Get()),
+					html.Button(html.Props{
+						Type: "button", Class: "discover-refresh",
+						// Refreshing a list that isn't loaded is a no-op with a
+						// spinner — disabled until the gate is open, not just until
+						// prefs answer, so it can't be pressed mid-"we don't know
+						// yet" either.
+						Disabled: refreshing.Get() || !smartPlus.Get(),
+						Data:     map[string]string{"role": roleDiscoverRefresh},
+						Raw:      map[string]any{attrDiscoverRefresh: "1"},
+					}, html.Text(refreshLabel(tr, refreshing.Get()))),
+				)
+			}),
 		),
-		discoverGatedBody(tr, prefsLoaded.Get(), smartPlus.Get(),
-			loading.Get(), loadErr.Get(), recs.Get(), busy.Get(), leaving.Get(), leavingKind.Get()),
+		ui.If(p.NoKey, func() ui.Node {
+			// Nothing to switch on: this replaces the opt-in gate, whose copy points
+			// at a switch that is not there.
+			return kitEmpty(kitEmptyProps{Class: "discover-empty discover-gate", Title: tr.T("discover", "noKeyTitle"),
+				TitleTag: "p", Lines: []string{tr.T("discover", "noKeyHint")}, LineClass: "discover-hint"})
+		}),
+		// Always present, so a screen reader hears the change rather than a region
+		// that appeared with its text already in it.
+		kitLive(kitLiveProps{Class: "discover-said", Role: kitRoleStatus}, html.Text(said.Get())),
+		// Said above the list it is about, and only while the list is shown: with
+		// review off there is no list, and mid-load there is nothing to qualify.
+		ui.If(!p.NoKey && smartPlus.Get() && reviewDown.Get() && !loading.Get() && !loadErr.Get(), func() ui.Node {
+			return discoverReviewDown(tr)
+		}),
+		ui.If(!p.NoKey, func() ui.Node {
+			return discoverGatedBody(tr, prefsLoaded.Get(), smartPlus.Get(),
+				loading.Get(), loadErr.Get(), recs.Get(), busy.Get(), leaving.Get(), leavingKind.Get())
+		}),
 	)
+}
+
+// discoverReviewDown is the line above the list when Smart+'s review could not
+// run on some of what it scored (G9): the suggestions below are real, they are
+// scored, and they have not been reviewed — which is not what the toggle being
+// on would lead a reader to assume.
+func discoverReviewDown(tr i18n.Runtime) ui.Node {
+	return kitLive(kitLiveProps{Class: "set-note discover-review-down", Role: kitRoleStatus},
+		html.Text(tr.T("discover", "reviewDown")))
 }
 
 // discoverGatedBody decides between "we don't know yet", the opt-in gate, and
@@ -648,6 +732,7 @@ func discoverCard(tr i18n.Runtime, r *pb.Recommendation, busy bool, leavingKind 
 			html.Button(html.Props{
 				Type: "button", Class: "discover-accept",
 				Disabled: busy,
+				Data:     map[string]string{"role": roleDiscoverFollow + r.GetDomain()},
 				Raw:      map[string]any{attrDiscoverAccept: r.GetDomain()},
 				Aria:     map[string]string{"describedby": titleID},
 			}, html.Text(acceptLabel(tr, busy))),

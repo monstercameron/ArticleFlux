@@ -20,7 +20,8 @@ func init() {
 		// The footer's keys are glyphs plus three verbs. One key rather than
 		// six: the separators are part of the line's rhythm and a translator
 		// needs to be able to move them.
-		"foot": "↑↓ move · Enter open · Esc close",
+		"foot":      "↑↓ move · Enter open · Esc close",
+		"footTouch": "Tap a result to open it.",
 
 		"kindFeed":    "Feed",
 		"kindTag":     "Tag",

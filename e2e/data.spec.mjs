@@ -85,6 +85,45 @@ test.describe('settings › data', () => {
     await expect(rail).toContainText('Imported');
   });
 
+  // G12 of the second UX audit: the same file a second time subscribes to
+  // nothing, and the report used to say "Subscribed 3 … Every row in the file
+  // became a subscription." It counts what was already there as already there.
+  //
+  // This is the SAME small file as the test above, on purpose. An earlier
+  // version of this test proved the chunked walk (G1) with a 450-row file — and
+  // left the suite's one shared account following 450 feeds, which nothing
+  // removes: every spec after it ran against a sidebar of 452 rows, one shard
+  // took an hour and a quarter, and a dozen unrelated tests timed out. The walk
+  // itself is pinned where it costs nothing: client/data/opmlwalk_test.go for
+  // the chunking and the merge, internal/reader and grpcsrv for the ranges, and
+  // TestSubscribeBatch* for the batch. What only a browser can show is the
+  // sentence, and two rows show it.
+  test('importing the same file again subscribes to nothing, and says so', async ({ page }) => {
+    await openDataTab(page);
+
+    const choose = async () => {
+      const [chooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        page.locator('[data-action="data-import"]').click(),
+      ]);
+      await chooser.setFiles({ name: 'somewhere-else.opml', mimeType: 'text/x-opml', buffer: Buffer.from(OPML, 'utf8') });
+    };
+
+    const panel = page.locator('.set-panel');
+    // Once, so that this test stands on its own whichever order the two run in.
+    await choose();
+    await expect(panel).toContainText('An export from somewhere else', { timeout: 60_000 });
+    await expect(panel).not.toContainText('Importing…');
+
+    // Nothing subscribed, both good rows counted as already there. (The
+    // sentence "Nothing new" is for a file with nothing else to report; this one
+    // still has its broken row to name, so the numbers are what say it.)
+    await choose();
+    await expect(panel).toContainText(/Subscribed\s*0/, { timeout: 60_000 });
+    await expect(panel).toContainText(/You already had\s*2/);
+    await expect(panel.locator('.imp-skip-name')).toContainText('E2E Broken');
+  });
+
   test('export downloads a file that contains the subscriptions', async ({ page }) => {
     await openDataTab(page);
 

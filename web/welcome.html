@@ -56,11 +56,11 @@ a { color: inherit; }
 /* --- masthead ----------------------------------------------------------- */
 .top {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--hair);
+  flex-wrap: wrap; gap: 8px 16px; padding: 18px 24px; border-bottom: 1px solid var(--hair);
 }
 .mark { font-family: var(--dsp); font-weight: 600; font-size: 21px; letter-spacing: -.01em; }
 .mark span { color: var(--accent); }
-.top-right { display: flex; align-items: center; gap: 14px; }
+.top-right { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
 .top-link {
   font-family: var(--ui); font-size: 13px; color: var(--soft);
   text-decoration: none; padding: 7px 12px; border-radius: 999px;
@@ -122,8 +122,8 @@ a { color: inherit; }
   box-shadow: inset 3px 0 0 var(--c, transparent);
 }
 .row:last-child { border-bottom: 1px solid var(--hair); }
-.row h3 { font-family: var(--rd); font-size: 15px; font-weight: 600; margin: 0 0 4px; line-height: 1.35; }
-.row p { margin: 0; font-family: var(--ui); font-size: 12px; color: var(--mute); }
+.row .row-title { font-family: var(--rd); font-size: 15px; font-weight: 600; margin: 0 0 4px; line-height: 1.35; }
+.row p:not(.row-title) { margin: 0; font-family: var(--ui); font-size: 12px; color: var(--mute); }
 .row--on { background: var(--sur); }
 
 /* --- article: the pitch ------------------------------------------------- */
@@ -231,27 +231,27 @@ h1 em { font-style: italic; color: var(--accent); }
   <!-- The list. The headlines are the argument; the datelines are facts. -->
   <section class="pane pane--list" aria-label="What it is">
    <div class="stick">
-    <h2 class="list-title">All feeds</h2>
+    <p class="list-title">All feeds</p>
     <p class="list-sub">Newest first.</p>
 
     <article class="row row--on" style="--c:#FFCE5C">
-      <h3>Your reading history stays on your machine</h3>
+      <p class="row-title">Your reading history stays on your machine</p>
       <p>One SQLite file · nothing phones home</p>
     </article>
     <article class="row" style="--c:#8FB8FF">
-      <h3>Google Reader's key map, unchanged</h3>
+      <p class="row-title">Google Reader's key map, unchanged</p>
       <p>j k o s r u · muscle memory transfers</p>
     </article>
     <article class="row" style="--c:#7DDCB0">
-      <h3>151 subscriptions, 3,621 items, no lag</h3>
+      <p class="row-title">151 subscriptions, 3,621 items, no lag</p>
       <p>virtualised list · honest scrollbar</p>
     </article>
     <article class="row" style="--c:#C89BFF">
-      <h3>Written in Go, all the way to the browser</h3>
+      <p class="row-title">Written in Go, all the way to the browser</p>
       <p>WebAssembly client · 0 JavaScript files</p>
     </article>
     <article class="row" style="--c:#FF8A6B">
-      <h3>Runs on the smallest droplet you can rent</h3>
+      <p class="row-title">Runs on the smallest droplet you can rent</p>
       <p>one binary · 1 GB of RAM</p>
     </article>
    </div>
@@ -269,10 +269,10 @@ h1 em { font-style: italic; color: var(--accent); }
     <p><strong>The unusual part is what is not here.</strong> No JavaScript framework, no bundler, no <code>npm install</code>, no REST layer translating between two halves of one program. The server is Go. The client is Go compiled to WebAssembly. The stylesheet is Go. The only JavaScript that ships is a boot shim that loads the module.</p>
 
     <div class="cta">
-      <a class="btn" href="/">Claim this server</a>
+      <a class="btn" href="/">Open the app</a>
       <a class="btn btn--ghost" href="https://monstercameron.github.io/ArticleFlux/">Try the demo first</a>
     </div>
-    <p class="cta-note">Claiming takes a username and a password. No account exists yet — the first person to set one owns this instance.</p>
+    <p class="cta-note">On a server nobody has set up yet, the first person to open it chooses a username and a password and owns it. On one that is already claimed, this is the sign-in.</p>
 
     <section class="claims">
       <div class="claim">

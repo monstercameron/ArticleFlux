@@ -288,6 +288,19 @@ func lookupEntry(loc, key string) (Entry, bool) {
 	return registry[loc][i], true
 }
 
+// Has reports whether the catalog the interface is authored in has this key.
+//
+// For the one caller that asks for a key it has COMPUTED rather than written
+// down (view.keyHint, which tries "<key>Touch" on a phone). A key written in a
+// call site is checked by the orphan and coverage tests; a computed one is
+// checked by nothing, and T answers a missing key with the key itself — which is
+// how "list.emptySearchHintTouch" came to be the second line of an empty search
+// on every phone.
+func Has(ns, key string) bool {
+	_, ok := lookupEntry(DefaultLocale, ns+"."+key)
+	return ok
+}
+
 // --- catalog registration -------------------------------------------------
 //
 // Called from the init() of each en_*.go, and from Import.

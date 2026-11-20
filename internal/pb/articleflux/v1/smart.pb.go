@@ -938,7 +938,12 @@ type SetSmartConfigRequest struct {
 	// routes (their hosts are fixed — a base URL beside them would be a way to
 	// send decisions somewhere llm.DeciderHosts does not list). Set to "" to
 	// remove it. Unset leaves it alone.
-	JevBaseUrl    *string `protobuf:"bytes,10,opt,name=jev_base_url,json=jevBaseUrl,proto3,oneof" json:"jev_base_url,omitempty"`
+	JevBaseUrl *string `protobuf:"bytes,10,opt,name=jev_base_url,json=jevBaseUrl,proto3,oneof" json:"jev_base_url,omitempty"`
+	// Put the model back to the default. A separate flag because `model` above
+	// is a plain string whose empty value already means "leave it alone", and
+	// turning that into "reset" would blank the model on every key-only save
+	// from a client that predates this field.
+	ResetModel    bool `protobuf:"varint,11,opt,name=reset_model,json=resetModel,proto3" json:"reset_model,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1043,6 +1048,13 @@ func (x *SetSmartConfigRequest) GetJevBaseUrl() string {
 	return ""
 }
 
+func (x *SetSmartConfigRequest) GetResetModel() bool {
+	if x != nil {
+		return x.ResetModel
+	}
+	return false
+}
+
 type SetSmartConfigResponse struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Config        *GetSmartConfigResponse `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
@@ -1130,8 +1142,13 @@ type ListModelsResponse struct {
 	// The model currently configured, so the client can show it selected even
 	// if it fell out of the live list (a model the account has lost access to,
 	// or one entered by hand before this picker existed).
-	Current       string `protobuf:"bytes,2,opt,name=current,proto3" json:"current,omitempty"`
-	DefaultModel  string `protobuf:"bytes,3,opt,name=default_model,json=defaultModel,proto3" json:"default_model,omitempty"`
+	Current      string `protobuf:"bytes,2,opt,name=current,proto3" json:"current,omitempty"`
+	DefaultModel string `protobuf:"bytes,3,opt,name=default_model,json=defaultModel,proto3" json:"default_model,omitempty"`
+	// True when the provider answered this listing with 401/403 — the stored key
+	// is present but not accepted. The config's own "configured" is presence, not
+	// proof, and saying "ready" beside a key the provider has already refused is
+	// the lie this closes.
+	KeyRejected   bool `protobuf:"varint,4,opt,name=key_rejected,json=keyRejected,proto3" json:"key_rejected,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1185,6 +1202,13 @@ func (x *ListModelsResponse) GetDefaultModel() string {
 		return x.DefaultModel
 	}
 	return ""
+}
+
+func (x *ListModelsResponse) GetKeyRejected() bool {
+	if x != nil {
+		return x.KeyRejected
+	}
+	return false
 }
 
 type ListLanguagesRequest struct {
@@ -1648,8 +1672,9 @@ type GetUIStringsResponse struct {
 	// A background fill is running for this locale, so polling is worthwhile.
 	Filling bool `protobuf:"varint,4,opt,name=filling,proto3" json:"filling,omitempty"`
 	// Why no fill is running when keys are pending: "not_owner", "no_key",
-	// "unsupported", or "" when one is running or nothing is pending. A class,
-	// never provider text (§22.11).
+	// "unsupported", "failed" (the last fill stopped on an error — the reason is
+	// in the server log, not here), or "" when one is running or nothing is
+	// pending. A class, never provider text (§22.11).
 	IdleReason    string `protobuf:"bytes,5,opt,name=idle_reason,json=idleReason,proto3" json:"idle_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2003,7 +2028,7 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\fjev_provider\x18+ \x01(\tR\vjevProvider\x12 \n" +
 	"\fjev_base_url\x18, \x01(\tR\n" +
 	"jevBaseUrl\x12\x1b\n" +
-	"\tjev_ready\x18- \x01(\bR\bjevReady\"\x8d\x04\n" +
+	"\tjev_ready\x18- \x01(\bR\bjevReady\"\xae\x04\n" +
 	"\x15SetSmartConfigRequest\x12$\n" +
 	"\x0eopenai_api_key\x18\x01 \x01(\tR\fopenaiApiKey\x12\"\n" +
 	"\rclear_api_key\x18\x02 \x01(\bR\vclearApiKey\x12\x14\n" +
@@ -2017,7 +2042,9 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\fjev_provider\x18\t \x01(\tH\x03R\vjevProvider\x88\x01\x01\x12%\n" +
 	"\fjev_base_url\x18\n" +
 	" \x01(\tH\x04R\n" +
-	"jevBaseUrl\x88\x01\x01B\x13\n" +
+	"jevBaseUrl\x88\x01\x01\x12\x1f\n" +
+	"\vreset_model\x18\v \x01(\bR\n" +
+	"resetModelB\x13\n" +
 	"\x11_classify_enabledB\r\n" +
 	"\v_budget_usdB\x1d\n" +
 	"\x1b_translate_articles_enabledB\x0f\n" +
@@ -2025,11 +2052,12 @@ const file_articleflux_v1_smart_proto_rawDesc = "" +
 	"\r_jev_base_url\"X\n" +
 	"\x16SetSmartConfigResponse\x12>\n" +
 	"\x06config\x18\x01 \x01(\v2&.articleflux.v1.GetSmartConfigResponseR\x06config\"\x13\n" +
-	"\x11ListModelsRequest\"k\n" +
+	"\x11ListModelsRequest\"\x8e\x01\n" +
 	"\x12ListModelsResponse\x12\x16\n" +
 	"\x06models\x18\x01 \x03(\tR\x06models\x12\x18\n" +
 	"\acurrent\x18\x02 \x01(\tR\acurrent\x12#\n" +
-	"\rdefault_model\x18\x03 \x01(\tR\fdefaultModel\"\x16\n" +
+	"\rdefault_model\x18\x03 \x01(\tR\fdefaultModel\x12!\n" +
+	"\fkey_rejected\x18\x04 \x01(\bR\vkeyRejected\"\x16\n" +
 	"\x14ListLanguagesRequest\"\xb7\x01\n" +
 	"\x15ListLanguagesResponse\x12;\n" +
 	"\tlanguages\x18\x01 \x03(\v2\x1d.articleflux.v1.SmartLanguageR\tlanguages\x12#\n" +

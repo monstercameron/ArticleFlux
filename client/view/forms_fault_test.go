@@ -83,6 +83,11 @@ func TestUsernameProblemsSaySomethingAboutAnAddress(t *testing.T) {
 		{"owner", "email address"},
 		{"Cam <cam@example.com>", "no name or spaces"},
 		{"cam@laptop", "email address"},
+		// This build has no address parser (internal/username/grammar_js.go),
+		// so these are refused by the checks around it or not at all.
+		{"cam@", "email address"},
+		{"@example.com", "email address"},
+		{"cam@@example.com", "email address"},
 	} {
 		err := usernamepolicy.Check(usernamepolicy.Normalise(c.in))
 		if err == nil {

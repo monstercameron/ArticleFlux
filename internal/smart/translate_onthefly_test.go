@@ -323,3 +323,49 @@ func TestALegacyRowIsHonouredAndUpgraded(t *testing.T) {
 		t.Errorf("a legacy row for the current English was re-billed: %d calls", prov.CallCount())
 	}
 }
+
+// G18 of the second UX audit: a background fill that stops on a provider error
+// is remembered, so the next read can say it stopped; starting another attempt
+// clears the mark; a fill that finishes leaves none.
+func TestAFillThatStoppedOnAnErrorIsRemembered(t *testing.T) {
+	settings := newSettings(t)
+	tr := NewTranslator(&fakeLLM{configured: true}, settings)
+	ctx := context.Background()
+	_ = answering(t, func(int, schemaflux.Request) (string, error) {
+		return "", errors.New("provider returned 401: Incorrect API key provided")
+	})
+	wait := func() {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for tr.Filling("es") {
+			if time.Now().After(deadline) {
+				t.Fatal("the background fill never finished")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	if tr.FillFailed("es") {
+		t.Fatal("a fill that never ran is marked failed")
+	}
+	if running, err := tr.StartFill(ctx, "es"); err != nil || !running {
+		t.Fatalf("StartFill: running=%v err=%v", running, err)
+	}
+	wait()
+	if !tr.FillFailed("es") {
+		t.Error("a fill that stopped on a provider error is not remembered")
+	}
+	if tr.FillFailed("fr") || tr.FillFailed("not-a-language") {
+		t.Error("the mark leaked onto another language")
+	}
+
+	// Another attempt clears it while it runs, and a clean finish leaves none.
+	_ = echoing(t)
+	if running, err := tr.StartFill(ctx, "es"); err != nil || !running {
+		t.Fatalf("second StartFill: running=%v err=%v", running, err)
+	}
+	wait()
+	if tr.FillFailed("es") {
+		t.Error("the mark survived a fill that finished cleanly")
+	}
+}

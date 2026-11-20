@@ -516,7 +516,8 @@ func equalStringSets(a, b []string) bool {
 	return true
 }
 
-// The Categories band is UNCONDITIONAL: nothing hides it.
+// The Categories band is unconditional once there is anything for it to file:
+// having filed nothing does not hide it.
 //
 // This replaces TestHasUnfiled, which covered the predicate that used to gate
 // the band on having something filed. The predicate is gone with the gate —
@@ -529,13 +530,14 @@ func TestCategoriesBandRendersWithNothingFiled(t *testing.T) {
 		name string
 		p    railProps
 	}{
-		{"no folders, no feeds at all", railProps{}},
 		{"no folders, every feed unfiled", railProps{
 			feeds: []*pb.Feed{{FolderId: ""}, {FolderId: ""}},
 		}},
 		{"a folder with nothing in it", railProps{
 			folders: []*pb.Folder{{Id: "f1", Name: "Empty"}},
 		}},
+		// Articles are what the topic rows hold, wherever they came from.
+		{"articles waiting and no feed", railProps{total: 3}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -557,6 +559,17 @@ func TestCategoriesBandRendersWithNothingFiled(t *testing.T) {
 					actCatNew)
 			}
 		})
+	}
+}
+
+// A brand-new instance has nothing for the band to file, and showing it anyway
+// is twenty-six dead rows above an empty reader. Only that case: see the last
+// section of railCategories' comment.
+func TestCategoriesBandWaitsForSomethingToFile(t *testing.T) {
+	out := renderView(t, func(tr i18n.Runtime) ui.Node { return railPane(railProps{}) })
+	if strings.Contains(out, actCats) || strings.Contains(out, "topic-row") {
+		t.Fatalf("a rail with no feeds, no folders and nothing unread still rendered the "+
+			"Categories band\n--- output ---\n%s", out)
 	}
 }
 

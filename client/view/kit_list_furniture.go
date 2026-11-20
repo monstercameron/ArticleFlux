@@ -122,6 +122,7 @@ func kitBand(p kitBandProps, extra ...ui.Node) ui.Node {
 	kids = append(kids,
 		html.Button(html.Props{
 			Class:    "rail-band-toggle",
+			TabIndex: -1,
 			DataAttr: html.DataAttribute{Name: "action", Value: p.Action},
 			Aria:     kitDisclosureAria(p.Label, p.Open, kitFoldID(p.Action)),
 		},

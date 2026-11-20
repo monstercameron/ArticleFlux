@@ -124,6 +124,27 @@ func CategoryColor(slug string) string {
 // css.Global's emission is content-addressed and process-wide (see
 // GoWebComponents/css/global.go) — nothing here shares a selector with
 // anything Sheet() draws, so which one runs first does not matter.
+// catInkDarkMix is how far a category's hue moves toward the text colour on a
+// DARK theme before it is used as the chip's text, in percent.
+//
+// The raw hue (62% lightness) is a good mark and a mediocre word: set at 10.5px
+// on its own 16% tint it measured 4.03:1 in Ink and 3.80:1 in Ledger (G13). The
+// light themes already did this flip (62% toward the text colour); the dark ones
+// did not, because the hue looked fine. The number is the smallest whole-ten
+// share that clears the floor at EVERY hue in EVERY theme — hue_contrast_test.go
+// proves it by measurement, so changing it, a theme token, or a hue helper
+// cannot quietly take the chip back under AA.
+const catInkDarkMix = 40
+
+// catFill and catHoverFill are the chip's tint, in percent of its hue laid over
+// whatever it sits on. They are constants because the contrast test composites
+// the text over exactly this fill, and a hover tint heavier than 20% is what put
+// the chip back under the floor on the selected row.
+const (
+	catFill      = 16
+	catHoverFill = 20
+)
+
 func init() {
 	r := css.Raw
 
@@ -137,14 +158,14 @@ func init() {
 		r("font-size", "10.5px"), css.FontWeight.Semibold,
 		r("letter-spacing", ".02em"), css.WhiteSpace.NoWrap, r("flex", "none"),
 		r("border", "1px solid var(--cat, var(--line))"),
-		r("background", "color-mix(in oklab, var(--cat, transparent) 16%, transparent)"),
+		r("background", "color-mix(in oklab, var(--cat, transparent) "+strconv.Itoa(catFill)+"%, transparent)"),
 		r("color", "var(--cat-ink, var(--cat, var(--soft)))"),
 		// Every chip carries data-category-slug now (see view.catChipNode), so
 		// every chip is a click target — the pointer cursor is not decoration.
 		css.Cursor.Pointer,
 	)
 	css.Global(".cat-chip:hover",
-		r("background", "color-mix(in oklab, var(--cat, transparent) 26%, transparent)"))
+		r("background", "color-mix(in oklab, var(--cat, transparent) "+strconv.Itoa(catHoverFill)+"%, transparent)"))
 	// The light-theme flip, identical in shape to Sheet()'s --ink rule: at 62%
 	// lightness the raw hue is a clear mark on a dark ground and a smear as text
 	// on a cream one, so on light themes it is mixed toward --cream first. Same
@@ -152,6 +173,9 @@ func init() {
 	// a hue moves to become legible text" rather than two that could disagree.
 	css.Global("html[data-tone='light'] .cat-chip",
 		css.Custom("cat-ink", "color-mix(in oklab, var(--cat, currentColor), var(--cream) 62%)"))
+	// And the dark ones, by the measured share above.
+	css.Global("html:not([data-tone='light']) .cat-chip",
+		css.Custom("cat-ink", "color-mix(in oklab, var(--cat, currentColor), var(--cream) "+strconv.Itoa(catInkDarkMix)+"%)"))
 
 	// The secondary categories (0-2 more, per docs/FEATURES.md §76) are the same
 	// mark, deliberately quieter: no fill, and a lighter border — a secondary is
@@ -159,7 +183,11 @@ func init() {
 	// with the same weight would make "one primary, up to two secondary" read as
 	// three equal categories.
 	css.Global(".cat-chip-sec",
-		r("background", "transparent"), r("opacity", ".78"), css.FontWeight.Medium,
+		r("background", "transparent"), css.FontWeight.Medium,
+		// Quieter by its border, not by opacity over the whole chip: an opacity
+		// dims the TEXT too, and the text is what has to stay at AA (G13). The
+		// border is a mark, and a mark may be faint.
+		r("border-color", "color-mix(in oklab, var(--cat, var(--line)) 55%, transparent)"),
 	)
 
 	// Genre (news/analysis/opinion/…) is plainer again, on purpose: it is a

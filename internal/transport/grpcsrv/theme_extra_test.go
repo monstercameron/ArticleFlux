@@ -273,8 +273,9 @@ func TestThemeErrMapsEveryGeneratorFailure(t *testing.T) {
 		{"not configured", llm.ErrNotConfigured, codes.FailedPrecondition},
 		{"no prompt", smart.ErrNoPrompt, codes.InvalidArgument},
 		{"truncated", llm.ErrTruncated, codes.ResourceExhausted},
-		{"not a palette", design.ErrNotAPalette, codes.Unavailable},
-		{"anything else", errors.New("the provider is on fire"), codes.Unavailable},
+		{"not a palette", design.ErrNotAPalette, codes.Internal},
+		{"anything else", errors.New("the provider is on fire"), codes.Internal},
+		{"circuit open", llm.ErrCircuitOpen, codes.FailedPrecondition},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -291,8 +292,8 @@ func TestThemeErrMapsEveryGeneratorFailure(t *testing.T) {
 // crash the RPC it is trying to fail gracefully.
 func TestThemeErrDoesNotPanicWithNoLogger(t *testing.T) {
 	s := &SmartServer{}
-	if err := s.themeErr(errors.New("unclassified"), "test"); status.Code(err) != codes.Unavailable {
-		t.Errorf("code = %v, want Unavailable", status.Code(err))
+	if err := s.themeErr(errors.New("unclassified"), "test"); status.Code(err) != codes.Internal {
+		t.Errorf("code = %v, want Internal", status.Code(err))
 	}
 }
 

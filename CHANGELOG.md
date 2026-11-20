@@ -9,6 +9,124 @@ The full reasoning behind any entry lives in the commit message; this file is th
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-11-19
+
+### Changed — 2026-11-19, the browser no longer carries an address parser
+
+- The setup form checked a username with the same function the server uses, which meant the
+  browser linked Go's `net/mail` and everything behind it: 78 KB of a bundle with a ceiling,
+  to pre-empt an answer the server gives anyway. The everyday mistakes — no `@`, a name in
+  front of the address, a host with no dot — are still caught as you leave the field, by the
+  same lines of code on both sides; the far end of RFC 5322 is the server's to judge, and its
+  refusal lands on the same field. The browser is never stricter than the server.
+
+### Fixed — 2026-11-19, the second audit: what you press, where focus lands, and what you can read
+
+- **An article's tag chip said the sidebar label, not the tag.** Rename `rust` to "Systems stuff" for
+  the sidebar and every article of that feed read "Systems stuff", with a remove button announced the
+  same way, beside a tag field that still wanted `rust`. The panel's own copy promises the chips say
+  the tag. They do now.
+- **The tag chip could not be used from the keyboard.** It was one button holding a span-×: Enter did
+  nothing (the tag id sat on a child span), the × was `tabindex -1`, and the × measured 7×13 px. A chip
+  is two real buttons now — open, remove — each with its own name and Tab stop, the remove target at
+  least 24 px (32 on a touch screen).
+- **A tag rename the server refused looked like nothing had happened.** The error went to the list's
+  banner behind the scrim. It is said inside the panel, beside the field, which is marked
+  `aria-invalid` and keeps focus; typing clears it.
+- **The rail's ＋ made a folder called "New folder" before asking for a name,** and Cancel, Close and
+  Escape all left it behind. The editor opens in a create shape — its own title, a Create button, no
+  Delete — and nothing exists until a name is saved. An empty name now says so in the folder's own
+  words ("A folder needs a name." — it was hard-coded English that said "category") and marks the field.
+- **The sidebar was one Tab stop per control** — 79 with eleven feeds. Every row, gear, caret and
+  section button is out of the Tab order and the current row is the pane's one stop: Tab visits the
+  sidebar once, Up/Down move between rows (from a gear too), Left/Right step between a row and its own
+  gear or caret (mirrored in a right-to-left interface). Add a feed and the fold button stay ordinary
+  stops.
+- **Focus fell to the page after** closing the folder editor opened from ＋, saving a folder name,
+  Escape from Tag settings after a rename (the rename re-sorts the rail, so the gear it was opened from
+  is a different element), Follow and Not for me on Discover (the card leaves; focus goes to the card
+  that takes its place, or Refresh), Escape in the search box (it lands in the list), and `,` into
+  Settings (focus lands on the settings screen, so the next Tab is its first control, not a control in
+  the pane that left).
+- **Armed deletes.** The folder editor's armed Delete answers Escape — from the button or from the
+  name field — with "no" and keeps the dialog, and a press elsewhere in it disarms, like every other
+  armed control. An armed Mark all read no longer survives the `?` sheet or the palette.
+- **The note's save mark never said "Not saved" during an outage, and never ticked after it.** Offline
+  it was a spinner reading "Saving…" for as long as the outage lasted, and after the reconnect it was
+  still a spinner while the note had in fact been delivered. A save the connection could not carry now
+  says "Not saved — still only on this device" in visible words, and ticks once the outbox drains.
+- **Text typed in the last 800 ms before a reload was lost.** The debounce had not fired and nothing
+  flushed it; `pagehide` now hands what is unsaved to the outbox, which is written to storage before the
+  page goes and replayed when it is back.
+- **Length limits are said, and enforced where they are typed.** Folder names, tag labels and tags stop
+  at 48 characters and notes at 8,000, the folder and tag-label fields say so under themselves, and a
+  refused field is `aria-invalid`.
+- **Text under the AA floor in the dark themes.** Category chips measured 3.8–4.0:1 (Ink, Ledger) and a
+  read row's source name 3.8–4.0:1 (Ink, Ledger, Contrast), because the first was a raw hue on its own
+  tint and the second had an opacity thrown over it. Both are now mixes toward theme text colours,
+  with the share chosen by a test that does the browser's arithmetic for every feed and category hue in
+  every theme, on all three grounds a row can sit on, hover tint included. The secondary chip is quietened
+  by its border instead of an opacity over its text.
+- **Touch targets.** On a coarse pointer only: sidebar rows 40 px, feed/tag gears 32, folder carets
+  28×36, section actions 36, the note toggle 32+, round icon buttons 40, tag × 32 — they were 18–31 px
+  with 1 px between. A mouse keeps the dense sidebar.
+- **The now-playing bar sat half over the list pane** at desktop widths: it is centred on the reading
+  column now, in every layout (folded rail, tablet, focus mode, right-to-left).
+- **A voice notice outlived the voice.** "This browser has no speech synthesiser…" stayed in the list
+  header after Stop and after opening another article; both withdraw it, and only it.
+- **Discover.** The disabled Refresh was drawn in the accent outline that means "press me". Follow and
+  Not for me now say what happened ("Following …", "Dismissed …") in a live region.
+- **`/welcome`** scrolled sideways at 320 px (the masthead links now wrap), offered "Claim this server"
+  on a server already claimed (it says "Open the app" and explains both cases), and opened with a mock
+  UI whose decorative headings came before the page's own H1.
+- A folder's full name is its tooltip in the sidebar, where it is cut at about twenty characters.
+
+### Fixed — 2026-11-19, the second audit: Smart+, translation and import
+
+- **A failed Smart+ call told the whole app the connection had dropped.** The server answered a
+  provider failure (a rejected key, a 5xx, an unreadable reply) with `Unavailable`, and the client's
+  connection tracker reads every `Unavailable` as the transport going away: the list header said
+  "Retry" and the search dot went red while the server was answering perfectly well. Translating the
+  interface, translating an article and composing a theme now answer `Internal`, and the breaker being
+  open answers `FailedPrecondition` with the same key and words as before. The client also stops
+  reading an `Unavailable` that carries a Smart+ catalog key as the transport, so an older server's
+  answer is classified the same way. Refreshing Discover on an instance with no recommender wired
+  answered `Unavailable` too, for a fact about the deployment and not the link; it is `Unimplemented`.
+- **A large OPML import was cancelled at the client's deadline with no report.** The whole file was
+  one RPC under 120 seconds, one transaction per row, and a full list-every-feed scan after each (so
+  quadratic in the list's own size): a 3,000-row file took minutes, blocked every other writer, and
+  left some rows imported and no word of how many. Rows are now written a hundred to a transaction
+  with no scan (3,000 rows in about 0.7 s on the test machine), the client walks the file two hundred
+  rows at a time saying "Importing… n of m", and a call that fails leaves the report so far standing
+  beside how far it got. A client that predates the walk still gets the whole file, and it is no longer
+  cancelled with its caller. Additive proto fields only (`start`, `max_rows`, `total`, `next`,
+  `skipped`).
+- **The OPML report counted rows already followed as subscribed.** "Subscribed 3 · You already had 3"
+  on a repeat import. Subscribed is now what the import created; a repeat says "Nothing new", and a
+  file that lost more than thirty rows reports the exact count beside the thirty it lists.
+- **The Smart+ model could not be put back to the default.** An empty `model` has always meant
+  "leave it alone", so a cleared field saved nothing and the old model stayed. A save now says what it
+  saved ("Model saved: …"), and blank is its own flag (`reset_model`), so a key-only save from an older
+  client still cannot blank the model. The picker has a "Default" entry for the same reason.
+- **The key row said "configured" and the ladder said "ready" about a key the provider had already
+  refused.** The model listing every tab load makes now reports a 401/403 (`key_rejected`), and the row
+  says "rejected by OpenAI" with what to do. Discover said nothing when every Smart+ review failed and
+  showed its suggestions as if reviewed; the pass records that reviews could not run and the page says
+  so above the list.
+- **A refused name, tag or note was "Something went wrong on the server" or "Couldn't add that tag".**
+  A folder name that is too long, empty, or taken (including in another case, on rename), a tag or tag
+  label over its limit, and a note over its limit now each come back with a catalog key and the number.
+  The limits count characters, not bytes (a name in Cyrillic fit a third as many letters as the same
+  name in English); the note limit is 8,000 characters where it was 8 KiB.
+- **Smart+ form feedback.** One status line shows at a time (a refusal no longer stacks under the last
+  save's "Route saved."), picking the LiteLLM route no longer leaves a stale "Route saved.", and a field
+  the server refused is marked `aria-invalid` and takes focus.
+- **The translate failure line said the same thing twice** ("Couldn't translate this article: Couldn't
+  translate this article just now."); it shows the server's sentence once.
+- **Switching interface language with a failing key stopped at "0 of 1,519 translated." and said
+  nothing.** The background fill's failure went to the log only; the read after it now says it stopped
+  and what to check.
+
 ### Fixed — 2026-11-19, what the audit left half-done
 
 - **List markers in an English article sat on the wrong side in a right-to-left interface**

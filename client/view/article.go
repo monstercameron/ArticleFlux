@@ -167,7 +167,7 @@ func articlePane(tr i18n.Runtime, p articleProps) ui.Node {
 		// way back to be on screen rather than remembered.
 		return html.Main(html.Props{Class: "pane pane-article"},
 			focusPerch(tr, p.focus),
-			kitEmpty(kitEmptyProps{Title: tr.T("article", "pickTitle"), Lines: []string{tr.T("article", "pickHint")}}),
+			kitEmpty(kitEmptyProps{Title: tr.T("article", "pickTitle"), Lines: []string{keyHint(tr, "article", "pickHint")}}),
 		)
 	}
 
@@ -280,7 +280,7 @@ func articleBlock(tr i18n.Runtime, it *pb.Item, p articleProps) ui.Node {
 	trans := translationFor(p, it.GetId())
 	translated := showingTranslation(trans)
 	title := it.GetTitle()
-	var titleLang map[string]any
+	titleLang := autoDir()
 	if translated {
 		if strings.TrimSpace(trans.title) != "" {
 			title = trans.title
@@ -868,14 +868,26 @@ func articleBodyIn(tr i18n.Runtime, key, raw, lang string) ui.Node {
 	return html.Div(props, nodes...)
 }
 
-// langAttrs is the lang/dir pair for content in a locale, or nil for content
-// in the interface's own language.
+// langAttrs is the lang/dir pair for content in a locale, or dir="auto" for
+// content whose language is not known — the publisher's own text, which takes
+// its direction from its letters rather than from the interface.
+//
+// The attribute is what gives the BOX a direction, and the CSS
+// `unicode-bidi: plaintext` rules in design/sheet.go only give the TEXT one.
+// List markers, blockquote bars and indents follow the box: an English article
+// in an Arabic interface (the root is dir=rtl) had its bullets on the right of
+// left-to-right lines. dir=auto and plaintext resolve to the same direction from
+// the same first strong letter, so they cannot disagree.
 func langAttrs(locale string) map[string]any {
 	if locale == "" {
-		return nil
+		return autoDir()
 	}
 	return map[string]any{"lang": locale, "dir": string(i18n.DirectionFor(locale))}
 }
+
+// autoDir is dir="auto" as Props.Raw, a fresh map each time because a Props map
+// is the caller's to mutate.
+func autoDir() map[string]any { return map[string]any{"dir": "auto"} }
 
 // bodyCache holds parsed article bodies, keyed by item id.
 //

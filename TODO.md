@@ -531,6 +531,14 @@ click, infinite scroll working (60 → 120 → 180), and the list stable while i
 guards. They were only findable by driving a browser against a realistic amount of data. A 5-item
 fixture would never have surfaced any of them.
 
+**Still owed from the second audit (G1): the rail at 2,000+ feeds.** A 3,000-row OPML now imports in
+about a second and reports (it used to run for minutes and lose its report), but the rail draws every
+feed row and every gear button into the DOM — 2,085 gear buttons in the audit's screenshot — and the
+first paint after boot was ~33 s with that many. The list is virtualised (see "Reading at firehose
+scale"); the rail is not. Virtualise it, or window it behind the folders, before anyone imports a file
+that size on purpose. The 33 s was measured while the import was still holding the write lock, so
+re-measure first: some of it may have been the import and not the rail.
+
 ---
 
 ## Design transcription, the reading stream, verdicts, mobile (2026-07-26, later)

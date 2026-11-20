@@ -431,3 +431,42 @@ func detailOf(t *testing.T, err error) *pb.ErrorDetail {
 	t.Fatalf("no ErrorDetail attached to %v", err)
 	return nil
 }
+
+// G7 and G19: what a reader typed and the store refused comes out as a keyed
+// InvalidArgument that names the field and carries the limit, not as the
+// Internal default an unmapped error gets.
+func TestFromDomainMapsRefusedTextToKeyedInvalidArguments(t *testing.T) {
+	cases := []struct {
+		err   *store.TextError
+		key   string
+		field string
+		max   string
+	}{
+		{&store.TextError{Subject: store.SubjectFolder, Problem: store.ProblemEmpty}, "srv.folderNameEmpty", "name", ""},
+		{&store.TextError{Subject: store.SubjectFolder, Problem: store.ProblemTooLong, Max: 48}, "srv.folderNameTooLong", "name", "48"},
+		{&store.TextError{Subject: store.SubjectFolder, Problem: store.ProblemTaken}, "srv.folderNameTaken", "name", ""},
+		{&store.TextError{Subject: store.SubjectTag, Problem: store.ProblemEmpty}, "srv.tagEmpty", "name", ""},
+		{&store.TextError{Subject: store.SubjectTag, Problem: store.ProblemTooLong, Max: 48}, "srv.tagTooLong", "name", "48"},
+		{&store.TextError{Subject: store.SubjectTagLabel, Problem: store.ProblemTooLong, Max: 48}, "srv.tagLabelTooLong", "label", "48"},
+		{&store.TextError{Subject: store.SubjectNote, Problem: store.ProblemTooLong, Max: 8000}, "srv.noteTooLong", "body", "8000"},
+	}
+	for _, c := range cases {
+		t.Run(c.key, func(t *testing.T) {
+			var got *Error
+			if !errors.As(FromDomain(fmt.Errorf("wrapped: %w", c.err)), &got) {
+				t.Fatal("not an *Error")
+			}
+			if got.Kind != KindInvalidArgument || got.Key != c.key || got.Field != c.field || got.Args["max"] != c.max {
+				t.Errorf("got kind=%d key=%q field=%q max=%q", got.Kind, got.Key, got.Field, got.Args["max"])
+			}
+			if c.max != "" && !strings.Contains(got.Message, c.max) {
+				t.Errorf("the English fallback %q does not name the limit %s", got.Message, c.max)
+			}
+		})
+	}
+	// A subject/problem nobody mapped is the safe default, not a made-up key.
+	var odd *Error
+	if !errors.As(FromDomain(&store.TextError{Subject: "nothing", Problem: "weird"}), &odd) || odd.Kind != KindInternal {
+		t.Errorf("an unmapped text error = %+v, want Internal", odd)
+	}
+}

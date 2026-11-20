@@ -3,6 +3,8 @@ package grpcsrv
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -105,8 +107,8 @@ func TestImportOpmlHappyPath(t *testing.T) {
 }
 
 // A second import of the same file must not read as 151 failures — the
-// row is already a subscription, so it counts again as Subscribed and also
-// as AlreadySubscribed (see ImportResult's own field comments).
+// row is already a subscription, so it is AlreadySubscribed and NOT Subscribed
+// again (G12: a repeat reported the first import's number a second time).
 func TestImportOpmlRerunIsIdempotent(t *testing.T) {
 	srv, _, _ := subscribeFixture(t)
 	ctx := context.Background()
@@ -117,9 +119,68 @@ func TestImportOpmlRerunIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
-	if resp.GetSubscribed() != 1 || resp.GetAlreadySubscribed() != 1 {
-		t.Errorf("re-run = {Subscribed:%d AlreadySubscribed:%d}, want {1 1}",
+	if resp.GetSubscribed() != 0 || resp.GetAlreadySubscribed() != 1 {
+		t.Errorf("re-run = {Subscribed:%d AlreadySubscribed:%d}, want {0 1}",
 			resp.GetSubscribed(), resp.GetAlreadySubscribed())
+	}
+}
+
+// G1: the client walks a big file in ranges and says "n of m" between them. The
+// server's half of that contract: each call takes only its range, reports
+// where the file stands, and the ranges add up to the whole.
+func TestImportOpmlInRanges(t *testing.T) {
+	srv, _, _ := subscribeFixture(t)
+	ctx := context.Background()
+	var b strings.Builder
+	b.WriteString(`<opml version="2.0"><body>`)
+	for i := 0; i < 25; i++ {
+		fmt.Fprintf(&b, `<outline type="rss" text="F%d" xmlUrl="https://r%d.example/feed"/>`, i, i)
+	}
+	b.WriteString(`<outline type="rss" text="Bad" xmlUrl="not a url"/></body></opml>`)
+	data := []byte(b.String())
+
+	var subscribed, skipped, next int32
+	for steps := 0; next < 26; steps++ {
+		if steps > 10 {
+			t.Fatal("the walk does not terminate")
+		}
+		resp, err := srv.ImportOpml(ctx, &pb.ImportOpmlRequest{Opml: data, Start: next, MaxRows: 10})
+		if err != nil {
+			t.Fatalf("range from %d: %v", next, err)
+		}
+		if resp.GetTotal() != 26 {
+			t.Fatalf("Total = %d, want 26", resp.GetTotal())
+		}
+		subscribed += resp.GetSubscribed()
+		skipped += resp.GetSkipped()
+		next = resp.GetNext()
+	}
+	if subscribed != 25 || skipped != 1 {
+		t.Errorf("summed: subscribed=%d skipped=%d, want 25 and 1", subscribed, skipped)
+	}
+	// The unchunked form, which a client that predates the fields sends, still
+	// takes the whole file in one call.
+	resp, err := srv.ImportOpml(ctx, &pb.ImportOpmlRequest{Opml: data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetNext() != 26 || resp.GetAlreadySubscribed() != 25 || resp.GetSubscribed() != 0 {
+		t.Errorf("unchunked repeat = %+v", resp)
+	}
+}
+
+// The unchunked import is not cancelled with its caller: a client that hangs up
+// at its own deadline must not leave a half-imported file nobody was told about.
+func TestUnchunkedImportOutlivesItsCallersDeadline(t *testing.T) {
+	srv, _, _ := subscribeFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the caller has already given up
+	resp, err := srv.ImportOpml(ctx, &pb.ImportOpmlRequest{Opml: []byte(minimalOPML)})
+	if err != nil {
+		t.Fatalf("ImportOpml with a cancelled caller: %v", err)
+	}
+	if resp.GetSubscribed() != 1 {
+		t.Errorf("Subscribed = %d, want the import to have finished", resp.GetSubscribed())
 	}
 }
 

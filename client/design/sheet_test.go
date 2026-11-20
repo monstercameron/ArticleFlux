@@ -118,6 +118,10 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		// Set per element from Go: the spawn stagger index, and the list
 		// cursor's offset down the scroller.
 		"--i": true, "--cursor": true,
+		// The floating player's shift onto the reading column: a layout quantity
+		// derived from the pane widths and set by the sheet itself in
+		// nowPlayingCSS, not by a theme.
+		"--np-shift": true,
 		// One category's colour, written onto a chip by view.catStyleFor the
 		// same way a source's hue is written by hueVarFor. A property of the
 		// row it is on rather than of the palette — and deliberately unset for
@@ -132,6 +136,9 @@ func TestThemeVarsCoverEveryTokenTheSheetReads(t *testing.T) {
 		// The article's own gutter, so a full-bleed child can reach back out to
 		// the pane edge. A measurement, and one the reader changes by resizing.
 		"--art-pad": true,
+		// The reading column's width, which the body, the note and the centring
+		// gutters all read. A measurement of the reading face, not a palette.
+		"--col": true,
 		// The slideshow (§19). Its four durations belong with --t1/--t2/--t3
 		// above — motion, not palette — and its gutter belongs with --art-pad.
 		"--t-slide": true, "--t-head": true, "--t-glide": true, "--t-catch": true,

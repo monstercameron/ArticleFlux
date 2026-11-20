@@ -65,6 +65,13 @@ func (s *SmartServer) GetUIStrings(ctx context.Context, req *pb.GetUIStringsRequ
 	if pending == 0 || out.Filling {
 		return out, nil
 	}
+	// A fill that ran and stopped on an error says so (G18). Only on a plain
+	// read: a request that asks for a fill is the owner starting another
+	// attempt, which clears the mark and gets the ordinary answer.
+	if !req.GetFill() && s.tr.FillFailed(locale) {
+		out.IdleReason = "failed"
+		return out, nil
+	}
 	switch {
 	case !req.GetFill():
 	case !ownerRoles[sc.Role]:
@@ -190,9 +197,39 @@ func (s *SmartServer) localeErr(locale string, err error) error {
 		return errKey(codes.InvalidArgument, "srv.alreadySourceLanguage",
 			"The interface is already in English.", nil)
 	}
+	if errors.Is(err, llm.ErrCircuitOpen) {
+		return smartPaused()
+	}
 	s.log.Error("ui translation lookup failed", "locale", locale, "err", err)
-	return errKey(codes.Unavailable, "srv.translateFailed",
+	return errKey(providerFailed, "srv.translateFailed",
 		"Couldn't translate the interface just now.", nil)
+}
+
+// providerFailed is the code a refusal carries when the PROVIDER failed — a
+// rejected key, a 5xx, a reply nobody could read — rather than anything about
+// the request or about this server.
+//
+// It is Internal and not Unavailable, and the difference is a screen: the wasm
+// client's connection tracker reads every Unavailable as "the transport
+// dropped" (client/data.Classify), so a bad Smart+ key turned the list header
+// into "Retry" and the search dot red while the server was answering perfectly
+// well. Unavailable is for the connection and for this server's own degraded
+// modes (§20.7); an upstream's failure is an application answer, and Internal
+// is the code that says "the work failed" without saying "you are offline".
+// A named constant so the next handler to map a provider failure finds the
+// decision rather than re-making it with a literal.
+const providerFailed = codes.Internal
+
+// smartPaused is the breaker-open refusal for a Smart+ call (§22.8).
+//
+// FailedPrecondition and not the Unavailable apierr gives the same sentinel on
+// the generic path: the circuit is the PROVIDER's state, the connection is fine,
+// and a reader who sees the sync indicator go red because OpenAI is having a
+// bad hour is being told the wrong thing about the wrong system. The key and
+// the English are the ones the generic path uses, so the wording is unchanged.
+func smartPaused() error {
+	return errKey(codes.FailedPrecondition, "srv.smartUnavailable",
+		"Smart+ features are paused while the provider recovers.", nil)
 }
 
 // articleErr maps an article translation's failures to keyed refusals. The
@@ -224,8 +261,10 @@ func (s *SmartServer) articleErr(locale string, err error) error {
 	case errors.Is(err, llm.ErrTruncated):
 		return errKey(codes.ResourceExhausted, "srv.translationTruncated",
 			"The translation was cut off before it finished. Try again.", nil)
+	case errors.Is(err, llm.ErrCircuitOpen):
+		return smartPaused()
 	}
 	s.log.Error("article translation failed", "locale", locale, "err", err)
-	return errKey(codes.Unavailable, "srv.articleTranslateFailed",
+	return errKey(providerFailed, "srv.articleTranslateFailed",
 		"Couldn't translate this article just now.", nil)
 }

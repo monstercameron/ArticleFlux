@@ -2094,7 +2094,17 @@ type ImportOpmlRequest struct {
 	// which attribute holds the title, and about the declared encoding, and
 	// internal/opml is written against what real exports contain. A client that
 	// parsed first would be a second, worse parser.
-	Opml          []byte `protobuf:"bytes,1,opt,name=opml,proto3" json:"opml,omitempty"`
+	Opml []byte `protobuf:"bytes,1,opt,name=opml,proto3" json:"opml,omitempty"`
+	// Which rows of the file this call may take: `start` is the index of the first
+	// row, `max_rows` how many (0 means "all of them", which is what a client that
+	// predates these fields sends). They exist because the whole file in one
+	// request is one deadline: a 3,000-row list outlasted the client's, the call
+	// was abandoned half way, and nobody was told how far it got. The client now
+	// walks the file in chunks and reports "n of m" between them; each chunk
+	// re-reads the file, which is a few hundred kilobytes and cheap beside the
+	// writes.
+	Start         int32 `protobuf:"varint,2,opt,name=start,proto3" json:"start,omitempty"`
+	MaxRows       int32 `protobuf:"varint,3,opt,name=max_rows,json=maxRows,proto3" json:"max_rows,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2134,6 +2144,20 @@ func (x *ImportOpmlRequest) GetOpml() []byte {
 		return x.Opml
 	}
 	return nil
+}
+
+func (x *ImportOpmlRequest) GetStart() int32 {
+	if x != nil {
+		return x.Start
+	}
+	return 0
+}
+
+func (x *ImportOpmlRequest) GetMaxRows() int32 {
+	if x != nil {
+		return x.MaxRows
+	}
+	return 0
 }
 
 // ImportSkip is one row that did not become a subscription, and why.
@@ -2206,10 +2230,12 @@ func (x *ImportSkip) GetReason() string {
 
 type ImportOpmlResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// subscribed counts rows that ended as a subscription, including the ones
-	// this reader already had — an import re-run must not read as 151 failures.
+	// subscribed counts the subscriptions this call CREATED. A row the reader
+	// already followed is not one — see already_subscribed — so a repeat import
+	// reads as "nothing new" rather than repeating the first one's number.
 	Subscribed int32 `protobuf:"varint,1,opt,name=subscribed,proto3" json:"subscribed,omitempty"`
-	// already_subscribed is how many of those were already in the sidebar.
+	// already_subscribed is how many rows were already in the sidebar (or were
+	// an earlier row of the same file).
 	AlreadySubscribed int32 `protobuf:"varint,2,opt,name=already_subscribed,json=alreadySubscribed,proto3" json:"already_subscribed,omitempty"`
 	// shared counts sources that already existed server-side and were attached
 	// rather than created (A14). A fact about the deployment, not the reader.
@@ -2218,7 +2244,16 @@ type ImportOpmlResponse struct {
 	Skips   []*ImportSkip `protobuf:"bytes,5,rep,name=skips,proto3" json:"skips,omitempty"`
 	// The file's own title, when it had one. Worth showing back: it is how a
 	// person confirms they picked the export they meant to.
-	Title         string `protobuf:"bytes,6,opt,name=title,proto3" json:"title,omitempty"`
+	Title string `protobuf:"bytes,6,opt,name=title,proto3" json:"title,omitempty"`
+	// How many rows the file holds, and the index of the first one this call did
+	// not reach (equal to total once the file is done). Zero in both is a server
+	// that predates chunking, which always does the whole file.
+	Total int32 `protobuf:"varint,7,opt,name=total,proto3" json:"total,omitempty"`
+	Next  int32 `protobuf:"varint,8,opt,name=next,proto3" json:"next,omitempty"`
+	// How many rows of THIS call did not become a subscription — the exact count,
+	// where `skips` is capped at thirty. Zero from a server that predates it, in
+	// which case the length of `skips` is the best there is.
+	Skipped       int32 `protobuf:"varint,9,opt,name=skipped,proto3" json:"skipped,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2293,6 +2328,27 @@ func (x *ImportOpmlResponse) GetTitle() string {
 		return x.Title
 	}
 	return ""
+}
+
+func (x *ImportOpmlResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *ImportOpmlResponse) GetNext() int32 {
+	if x != nil {
+		return x.Next
+	}
+	return 0
+}
+
+func (x *ImportOpmlResponse) GetSkipped() int32 {
+	if x != nil {
+		return x.Skipped
+	}
+	return 0
 }
 
 type ExportOpmlRequest struct {
@@ -2842,12 +2898,11 @@ type AnalyzeSiteResponse struct {
 	Scrape    *ScrapeProposal  `protobuf:"bytes,3,opt,name=scrape,proto3" json:"scrape,omitempty"`
 	// smart_status says why there is no proposal, so the dialog can offer the fix
 	// rather than a shrug:
-	//
-	//	"" ...........  a proposal is present, or none was asked for
-	//	"not_asked" ..  rungs 1-3 found nothing and smart was off
-	//	"no_key" ....   this instance has no OpenAI key (an admin adds one)
-	//	"refused" ...   robots.txt asks us not to read this page
-	//	"failed" ....   the model answered and the parser rejected what it said
+	//   "" ...........  a proposal is present, or none was asked for
+	//   "not_asked" ..  rungs 1-3 found nothing and smart was off
+	//   "no_key" ....   this instance has no OpenAI key (an admin adds one)
+	//   "refused" ...   robots.txt asks us not to read this page
+	//   "failed" ....   the model answered and the parser rejected what it said
 	SmartStatus   string `protobuf:"bytes,4,opt,name=smart_status,json=smartStatus,proto3" json:"smart_status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6060,8 +6115,13 @@ func (*ListRecommendationsRequest) Descriptor() ([]byte, []int) {
 type ListRecommendationsResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Recommendations []*Recommendation      `protobuf:"bytes,1,rep,name=recommendations,proto3" json:"recommendations,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// True when the reader has Smart+ review on and the last scoring pass could
+	// not review a single candidate (a rejected key, an open circuit, a provider
+	// outage). The suggestions then stand on the deterministic evidence alone and
+	// the screen says so, rather than presenting them as reviewed.
+	ReviewUnavailable bool `protobuf:"varint,2,opt,name=review_unavailable,json=reviewUnavailable,proto3" json:"review_unavailable,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ListRecommendationsResponse) Reset() {
@@ -6099,6 +6159,13 @@ func (x *ListRecommendationsResponse) GetRecommendations() []*Recommendation {
 		return x.Recommendations
 	}
 	return nil
+}
+
+func (x *ListRecommendationsResponse) GetReviewUnavailable() bool {
+	if x != nil {
+		return x.ReviewUnavailable
+	}
+	return false
 }
 
 type RefreshRecommendationsRequest struct {
@@ -6491,14 +6558,16 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x12already_subscribed\x18\x05 \x01(\bR\x11alreadySubscribed\"1\n" +
 	"\x12UnsubscribeRequest\x12\x1b\n" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\"\x15\n" +
-	"\x13UnsubscribeResponse\"'\n" +
+	"\x13UnsubscribeResponse\"X\n" +
 	"\x11ImportOpmlRequest\x12\x12\n" +
-	"\x04opml\x18\x01 \x01(\fR\x04opml\"L\n" +
+	"\x04opml\x18\x01 \x01(\fR\x04opml\x12\x14\n" +
+	"\x05start\x18\x02 \x01(\x05R\x05start\x12\x19\n" +
+	"\bmax_rows\x18\x03 \x01(\x05R\amaxRows\"L\n" +
 	"\n" +
 	"ImportSkip\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x16\n" +
-	"\x06reason\x18\x03 \x01(\tR\x06reason\"\xdd\x01\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\xa1\x02\n" +
 	"\x12ImportOpmlResponse\x12\x1e\n" +
 	"\n" +
 	"subscribed\x18\x01 \x01(\x05R\n" +
@@ -6507,7 +6576,10 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x06shared\x18\x03 \x01(\x05R\x06shared\x12\x18\n" +
 	"\afolders\x18\x04 \x01(\x05R\afolders\x120\n" +
 	"\x05skips\x18\x05 \x03(\v2\x1a.articleflux.v1.ImportSkipR\x05skips\x12\x14\n" +
-	"\x05title\x18\x06 \x01(\tR\x05title\"\x13\n" +
+	"\x05title\x18\x06 \x01(\tR\x05title\x12\x14\n" +
+	"\x05total\x18\a \x01(\x05R\x05total\x12\x12\n" +
+	"\x04next\x18\b \x01(\x05R\x04next\x12\x18\n" +
+	"\askipped\x18\t \x01(\x05R\askipped\"\x13\n" +
 	"\x11ExportOpmlRequest\">\n" +
 	"\x12ExportOpmlResponse\x12\x12\n" +
 	"\x04opml\x18\x01 \x01(\fR\x04opml\x12\x14\n" +
@@ -6786,9 +6858,10 @@ const file_articleflux_v1_reader_proto_rawDesc = "" +
 	"\x05score\x18\x04 \x01(\x01R\x05score\x12\x12\n" +
 	"\x04rung\x18\x05 \x01(\x05R\x04rung\x12\x1a\n" +
 	"\bevidence\x18\x06 \x01(\tR\bevidence\"\x1c\n" +
-	"\x1aListRecommendationsRequest\"g\n" +
+	"\x1aListRecommendationsRequest\"\x96\x01\n" +
 	"\x1bListRecommendationsResponse\x12H\n" +
-	"\x0frecommendations\x18\x01 \x03(\v2\x1e.articleflux.v1.RecommendationR\x0frecommendations\"\x1f\n" +
+	"\x0frecommendations\x18\x01 \x03(\v2\x1e.articleflux.v1.RecommendationR\x0frecommendations\x12-\n" +
+	"\x12review_unavailable\x18\x02 \x01(\bR\x11reviewUnavailable\"\x1f\n" +
 	"\x1dRefreshRecommendationsRequest\" \n" +
 	"\x1eRefreshRecommendationsResponse\"5\n" +
 	"\x1bAcceptRecommendationRequest\x12\x16\n" +

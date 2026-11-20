@@ -3,6 +3,8 @@
 package view
 
 import (
+	"time"
+
 	"github.com/monstercameron/ArticleFlux/client/i18n"
 	"github.com/monstercameron/ArticleFlux/client/platform"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
@@ -121,6 +123,10 @@ func (d addressBar) currentRoute() route {
 	return r
 }
 
+// settleAfter is how long the address gets to catch up with a closed slideshow
+// before the writer checks it did.
+const settleAfter = 400 * time.Millisecond
+
 // wire installs the two effects and refreshes the applyAddress action. Called
 // once, unconditionally, from Reader.
 func (d addressBar) wire() {
@@ -176,6 +182,33 @@ func (d addressBar) wire() {
 		prev := lastRoute.Get()
 		lastPath.Set(path)
 		lastRoute.Set(now)
+		// Leaving the slideshow: confirm the address followed, a moment later.
+		//
+		// The writer above trusts its own record of what it last wrote
+		// (lastPath), and writePath swallows every error — a history call the
+		// browser refuses or rate-limits leaves the record saying "written" and the
+		// address bar saying /slideshow, with nothing to run again because the
+		// path has not changed since. A mode that has gone while its address stays
+		// is a link that restarts nothing and a Back that goes nowhere. So the
+		// exit is checked against the BROWSER's address once things have settled,
+		// and rewritten in place if it still names the show.
+		//
+		// A moment later and not at once, and against lastPath rather than the
+		// route of this render: a Back onto a slideshow entry has the browser's
+		// address ahead of the state until apply() has run, and checking in that
+		// window would undo the navigation. By the time this fires apply() has
+		// seeded lastPath with the slideshow address, so the check stands down.
+		if prev.dlg == dialogShow && now.dlg != dialogShow {
+			time.AfterFunc(settleAfter, func() {
+				ui.PostAsync(func() {
+					if d.showOpen.Get() || !namesSlideshow(base, platform.Path()) ||
+						namesSlideshow(base, lastPath.Get()) {
+						return
+					}
+					platform.ReplacePath(lastPath.Get())
+				})
+			})
+		}
 		switch {
 		case first || restore:
 			// The landing address, normalised — and REPLACED, never pushed.

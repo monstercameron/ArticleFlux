@@ -3,6 +3,7 @@ package grpcsrv
 import (
 	"context"
 	"errors"
+	"time"
 
 	"google.golang.org/grpc/codes"
 
@@ -25,6 +26,15 @@ import (
 // of magnitude of headroom.
 const MaxImportBytes = 2 << 20
 
+// MaxImportRows caps how many rows one ImportOpml call takes however many the
+// caller asks for. A chunk is meant to finish well inside a client deadline, and
+// a caller that asks for ten thousand has re-invented the single call.
+const MaxImportRows = 500
+
+// importCeiling bounds an unchunked import that no longer depends on its
+// caller's deadline.
+const importCeiling = 10 * time.Minute
+
 func (s *ReaderServer) ImportOpml(ctx context.Context, req *pb.ImportOpmlRequest) (
 	*pb.ImportOpmlResponse, error) {
 
@@ -42,7 +52,26 @@ func (s *ReaderServer) ImportOpml(ctx context.Context, req *pb.ImportOpmlRequest
 			"That file is too large to import. A subscription list is normally a few dozen kilobytes.", nil)
 	}
 
-	res, err := s.svc.ImportOPML(ctx, sc, data)
+	// A chunk is bounded by its own size and runs under the caller's deadline,
+	// which is the point of chunking. The unchunked form — a client that predates
+	// start/max_rows, or a script — gets the whole file, and for that one the
+	// caller's patience is NOT the server's to inherit: the client's deadline
+	// used to cancel the loop half way, leaving some rows imported and no
+	// report, and a half-finished import nobody was told about is the worst of
+	// the outcomes (G1). It finishes whether or not anyone is still listening,
+	// bounded by a ceiling of its own so a wedged write cannot hold the handler
+	// forever.
+	maxRows := int(req.GetMaxRows())
+	if maxRows > MaxImportRows {
+		maxRows = MaxImportRows
+	}
+	ictx := ctx
+	if maxRows == 0 {
+		var cancel context.CancelFunc
+		ictx, cancel = context.WithTimeout(context.WithoutCancel(ctx), importCeiling)
+		defer cancel()
+	}
+	res, err := s.svc.ImportOPMLRange(ictx, sc, data, int(req.GetStart()), maxRows)
 	if err != nil {
 		if errors.Is(err, opml.ErrNotOPML) {
 			// The reader picked the wrong file, which is a thing they can fix —
@@ -59,6 +88,9 @@ func (s *ReaderServer) ImportOpml(ctx context.Context, req *pb.ImportOpmlRequest
 		AlreadySubscribed: int32(res.AlreadySubscribed),
 		Shared:            int32(res.Shared),
 		Folders:           int32(res.Folders),
+		Total:             int32(res.Total),
+		Next:              int32(res.Next),
+		Skipped:           int32(res.SkipCount()),
 	}
 	for _, sk := range res.Skips {
 		out.Skips = append(out.Skips, &pb.ImportSkip{

@@ -125,6 +125,12 @@ var (
 	// "add a key in Settings" rather than "something went wrong".
 	ErrNotConfigured = errors.New("llm: no OpenAI API key configured")
 
+	// ErrKeyRejected means the provider answered 401 or 403: a key is stored and
+	// the provider will not have it. Distinct from ErrNotConfigured because the
+	// remedy is different (paste a working key, not "add one") and because the
+	// Smart+ tab used to say "ready" about a key that had already been refused.
+	ErrKeyRejected = errors.New("llm: the provider rejected the API key")
+
 	// ErrTruncated means the model hit max_output_tokens. Distinct because the
 	// remedy is different from every other failure: ask for less, or allow
 	// more. Callers that assemble a whole catalog MUST treat this as a failure
@@ -847,6 +853,9 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 		}
 		if len(msg) > 300 {
 			msg = msg[:300]
+		}
+		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("%w: provider returned %d: %s", ErrKeyRejected, res.StatusCode, msg)
 		}
 		return nil, fmt.Errorf("llm: provider returned %d: %s", res.StatusCode, msg)
 	}

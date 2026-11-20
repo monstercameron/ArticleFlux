@@ -132,6 +132,19 @@ func init() {
 
 		"nameLabel": "Name",
 
+		// The same editor makes a folder, and nothing exists until the reader
+		// presses the button that says so (G6) — so it has its own title and verb
+		// rather than borrowing "Save name" for something that is not a rename.
+		"titleNew": "New folder",
+		"create":   "Create folder",
+		// The length is stated beside the field because the server refuses
+		// anything longer with a sentence the reader only sees after the fact
+		// (G19). {max} is the store's own cap, passed in rather than typed here.
+		"limit": "Up to {max} characters.",
+		// Was hard-coded English in reader.go, and said "category" where every
+		// other word on this dialog says folder (G19, G25).
+		"needName": "A folder needs a name.",
+
 		"delete":  "Delete folder",
 		"confirm": "Delete it",
 		// The typographic quotes are the design's, and a locale that uses

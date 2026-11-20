@@ -172,6 +172,12 @@ func Reader(p readerProps) ui.Node {
 	// snaps shut instead of animating rather than doing anything incorrect.
 	railClosing := ui.UseState("")
 	tags := ui.UseState[[]*pb.Tag](nil)
+	// tagsKnown and foldersKnown are "the list has arrived", which an empty list
+	// cannot say: an address naming a tag or folder is only judged missing once
+	// the answer is in (scopeMissing), so an account with none gets the honest
+	// "isn't here" and a reader still loading never sees it flash.
+	tagsKnown := ui.UseState(false)
+	foldersKnown := ui.UseState(false)
 	tagFeeds := ui.UseState[map[string][]string](nil)
 	// The categories, and which of them are unfolded in the rail.
 	//
@@ -202,6 +208,15 @@ func Reader(p readerProps) ui.Node {
 	// the stream has several note fields open at once and a single timer would
 	// let a keystroke in one article cancel the pending save of another.
 	noteTimers := ui.UseRef(map[string]*time.Timer{})
+	// noteQueued is the body of each note whose save the connection could not
+	// carry, so that when the outbox drains the glyph can go from "Not saved" to
+	// the tick (G11) — but only for an article whose draft is still that body.
+	noteQueued := ui.UseRef(map[string]string{})
+	// noteUnsaved is what has been typed and not yet acknowledged by the server,
+	// per article. Written SYNCHRONOUSLY by the input listener — the draft state is
+	// one PostAsync behind a keystroke — so that a pagehide a frame after the last
+	// key still sees it (flushNotes, G20).
+	noteUnsaved := ui.UseRef(map[string]string{})
 	tagDrafts := ui.UseState(map[string]string{})
 	feedFilter := ui.UseState(saved["rail.filter"])
 	// The rail filter's box carries its own seed, for the same reason the search
@@ -618,8 +633,15 @@ func Reader(p readerProps) ui.Node {
 	// smartBusy holds the locale being translated, not a bool: the chip that
 	// was pressed is the one that should show the work.
 	smartBusy := ui.UseState("")
-	smartNotice := ui.UseState("")
-	smartErr := ui.UseState("")
+	// The tab's two status lines, one showing at a time, and which field the
+	// refusal is about (see smartLine). smartKeyRejected is the provider having
+	// refused the stored key (G9).
+	smartNoticeText := ui.UseState("")
+	smartErrText := ui.UseState("")
+	smartErrRole := ui.UseState("")
+	smartKeyRejected := ui.UseState(false)
+	smartNotice := smartLine{self: smartNoticeText, other: smartErrText, role: smartErrRole}
+	smartErr := smartLine{self: smartErrText, other: smartNoticeText, role: smartErrRole, isErr: true}
 	smartLoading := ui.UseState(false)
 	// smartWrites counts the config answers that came back from a SAVE.
 	//
@@ -827,6 +849,10 @@ func Reader(p readerProps) ui.Node {
 	tsOpen := ui.UseState("")
 	tsLabel := ui.UseState("")
 	tsSaving := ui.UseState(false)
+	// tsErr is a refused save, drawn INSIDE the panel. It went to the list's
+	// banner, behind the scrim, where nobody looking at the dialog could see it —
+	// so a rename the server refused looked like nothing had happened (G5).
+	tsErr := ui.UseState("")
 	// Tags that have been typed but not yet acknowledged by the server, keyed by
 	// source id. They render as chips straight away so applying a tag feels like
 	// applying a tag rather than like waiting for one — see addTag.
@@ -855,8 +881,17 @@ func Reader(p readerProps) ui.Node {
 	// it. Anything the handler sees after the movement has ended is the reader's
 	// own scrolling, which is precisely what the guard was never meant to hide.
 	releaseFocus := func() {
+		// The guard itself comes off NOW, on this stack; only the question below
+		// is deferred. It is a Ref, so there is nothing for the reconciler to
+		// mind, and the difference is a press: a hold that has not yet arrived
+		// ends on the reader's pointerdown, and the click that pointerdown
+		// belongs to is read a moment later by the click handler, which drops a
+		// Like or a Dislike while this is armed (reader_clicks.go). Deferred, the
+		// guard was still up when the click it had just been released FOR
+		// arrived, and the first press on Like after opening an article did
+		// nothing.
+		expectFocus.Set("")
 		ui.PostAsync(func() {
-			expectFocus.Set("")
 			// And ask what is topmost NOW. The reporter speaks only on change,
 			// so the article that sat at the top for the whole of the travel was
 			// announced once — while this guard was discarding announcements —
@@ -924,6 +959,25 @@ func Reader(p readerProps) ui.Node {
 	// start of a search withdraws them; the line is shared with messages that are
 	// not about a list (the outbox, going offline), and those are left alone.
 	noticeIsReceipt := ui.UseRef(false)
+	// noticeVoice is the text of a notice that is about the voice — "no speech
+	// synthesiser", "Smart+ voice isn't available" — so that stopping the voice, or
+	// opening another article, can withdraw it (G24). It stayed in the list header
+	// after Stop and after switching articles, a sentence about something the
+	// reader had already stopped doing. Held as the text itself so that
+	// withdrawing it can never remove a different notice that arrived since.
+	noticeVoice := ui.UseRef("")
+	dropVoiceNotice := func() {
+		if t := noticeVoice.Get(); t != "" {
+			noticeVoice.Set("")
+			if notice.Get() == t {
+				notice.Set("")
+			}
+		}
+	}
+	sayVoice := func(text string) {
+		noticeVoice.Set(text)
+		notice.Set(text)
+	}
 	// Seeded from the scope that actually won rather than from the preference, so
 	// arriving at /search?q=rust puts "rust" in the box the reader is looking at.
 	searchText := ui.UseState(boot.sel.Search)
@@ -1108,7 +1162,14 @@ func Reader(p readerProps) ui.Node {
 	onJEVBaseInput := ui.UseEvent(func(v string) { jevBaseDraft.Set(v) })
 	onThemePromptInput := ui.UseEvent(func(v string) { themePrompt.Set(v) })
 	onFeedTitleInput := ui.UseEvent(func(v string) { fsTitle.Set(v) })
-	onTagLabelInput := ui.UseEvent(func(v string) { tsLabel.Set(v) })
+	onTagLabelInput := ui.UseEvent(func(v string) {
+		tsLabel.Set(v)
+		// Editing is answering the refusal; leaving it up would say the new text
+		// was refused too.
+		if tsErr.Get() != "" {
+			tsErr.Set("")
+		}
+	})
 	onPaletteInput := ui.UseEvent(func(v string) {
 		paletteQuery.Set(v)
 		// Every keystroke re-ranks, so the highlight has to go back to the top —
@@ -1311,6 +1372,7 @@ func Reader(p readerProps) ui.Node {
 			res, err := c.ListTags(context.Background())
 			ui.PostAsync(func() {
 				if err == nil {
+					tagsKnown.Set(true)
 					by := map[string][]string{}
 					for src, ids := range res.GetBySource() {
 						by[src] = ids.GetIds()
@@ -1347,6 +1409,7 @@ func Reader(p readerProps) ui.Node {
 				}
 				if err == nil {
 					folders.Set(res)
+					foldersKnown.Set(true)
 				}
 			})
 		}()
@@ -2251,6 +2314,7 @@ func Reader(p readerProps) ui.Node {
 	// the reader could actually see — a position within 3,600 loaded items is
 	// not a choice anyone made.
 	openItem := func(it *pb.Item) {
+		dropVoiceNotice()
 		if t := tracker.Get(); t != nil && it != nil {
 			if vis := platform.VisibleAttrs(".pane-list", "data-item-id"); len(vis) > 0 {
 				pos := -1
@@ -3011,6 +3075,7 @@ func Reader(p readerProps) ui.Node {
 							if err != nil {
 								return
 							}
+							act.Get().settleNotes()
 							// Only worth saying when it was enough to notice.
 							if n > 2 {
 								notice.Set(tr.T("reader", "outboxDrained", i18n.Args{"count": strconv.Itoa(n)}))
@@ -3191,9 +3256,12 @@ func Reader(p readerProps) ui.Node {
 			// Same threshold as the Watch path's drain: worth saying only when it
 			// was enough to notice, and silent otherwise — a reader who liked one
 			// article does not need to be told the sentence went through.
-			if n, err := c.Drain(ctx); err == nil && n > 2 {
+			if n, err := c.Drain(ctx); err == nil {
 				ui.PostAsync(func() {
-					notice.Set(tr.T("reader", "outboxDrained", i18n.Args{"count": strconv.Itoa(n)}))
+					act.Get().settleNotes()
+					if n > 2 {
+						notice.Set(tr.T("reader", "outboxDrained", i18n.Args{"count": strconv.Itoa(n)}))
+					}
 				})
 			}
 		}()
@@ -3655,10 +3723,18 @@ func Reader(p readerProps) ui.Node {
 		// and let the glyph go quiet.
 		stopNoteTimer(id)
 		if was, seen := noteServer.Get()[id]; seen && was == body {
+			delete(noteUnsaved.Get(), id)
 			noteSync.Set(withEntry(noteSync.Get(), id, ""))
 			return
 		}
-		noteSync.Set(withEntry(noteSync.Get(), id, noteSyncPending))
+		// Offline, the honest word is already "Not saved" while the debounce
+		// counts: a spinner that says Saving… for the length of an outage is the
+		// mark lying (G11).
+		state := noteSyncPending
+		if conn.Get() != data.Live {
+			state = noteSyncQueued
+		}
+		noteSync.Set(withEntry(noteSync.Get(), id, state))
 		// AfterFunc runs its callback on its own goroutine, so the state writes
 		// go back through PostAsync like every other async path here. It reaches
 		// the save through the Ref rather than closing over it, because this
@@ -3716,10 +3792,15 @@ func Reader(p readerProps) ui.Node {
 					// Queued. The prose is kept and goes out on the next
 					// recovery — but the glyph must NOT claim a tick, because
 					// the one thing it may never do is report a save that has
-					// not landed. Pending is the honest state and it is already
-					// what the glyph shows.
-					noteSync.Set(withEntry(noteSync.Get(), id, noteSyncPending))
+					// not landed. It says "Not saved" until settleNotes sees the
+					// outbox drain.
+					noteQueued.Get()[id] = body
+					noteSync.Set(withEntry(noteSync.Get(), id, noteSyncQueued))
 					return
+				}
+				delete(noteQueued.Get(), id)
+				if noteUnsaved.Get()[id] == body {
+					delete(noteUnsaved.Get(), id)
 				}
 				noteServer.Get()[id] = body
 				// Only when the draft is still what was sent. Typing continued
@@ -3741,6 +3822,44 @@ func Reader(p readerProps) ui.Node {
 				}
 			})
 		}()
+	}
+	// settleNotes runs after the outbox has drained: every note whose save was
+	// queued, and whose draft is still what was queued, is on the server now, so
+	// its mark goes from "Not saved" to the tick (G11). It was left on a spinner
+	// for good, because nothing ever came back to say the write had landed. A
+	// draft that has moved on is left to its own debounce, which owns the glyph.
+	act.Get().noteTyped = func(id, body string) { noteUnsaved.Get()[id] = body }
+	// flushNotes is the tab going away with a note not yet on the server: the
+	// debounce has not fired and the write may be in flight. It hands what is
+	// unsaved to the outbox, which is persisted before this returns and replayed
+	// on the next load (G20).
+	act.Get().flushNotes = func() {
+		c := client.Get()
+		if c == nil {
+			return
+		}
+		for id, body := range noteUnsaved.Get() {
+			c.QueueNote(id, body)
+		}
+	}
+	act.Get().settleNotes = func() {
+		queued := noteQueued.Get()
+		if len(queued) == 0 {
+			return
+		}
+		next := make(map[string]string, len(noteSync.Get()))
+		for k, v := range noteSync.Get() {
+			next[k] = v
+		}
+		for id, body := range queued {
+			delete(queued, id)
+			if noteDrafts.Get()[id] != body {
+				continue
+			}
+			noteServer.Get()[id] = body
+			next[id] = noteSyncSaved
+		}
+		noteSync.Set(next)
 	}
 	act.Get().addTag = func(id string) {
 		c := client.Get()
@@ -3990,50 +4109,24 @@ func Reader(p readerProps) ui.Node {
 
 	// --- the category editor -------------------------------------------------
 
-	// newCategory makes one from the rail's ＋, without a dialog.
+	// newCategory opens the folder editor in CREATE mode from the rail's ＋.
 	//
-	// It creates tr.T("reader", "newCategoryName") and opens the editor on it with the name
-	// selected, which is one click plus typing — where a dialog that asks for a
-	// name first is a click, a decision, and a confirm before anything exists.
-	// The row appears immediately, which is also what tells the reader where
-	// their categories live.
+	// It used to create a folder called "New folder" first and open the editor on
+	// it, so Cancel, Close and Escape all left a real, empty, unwanted "New
+	// folder" in the sidebar — and a second ＋ reopened the stray (G6). Nothing
+	// exists now until saveCategory runs with a name: the editor holds the
+	// sentinel catNewID, which draws the create form (its own title, no delete,
+	// a "Create folder" button) and which every way out simply clears.
+	//
+	// It remembers focus like openCategory does, so closing returns the reader
+	// to the ＋ they pressed instead of dropping them on <body> (G14).
 	act.Get().newCategory = func() {
-		c := client.Get()
-		if c == nil {
-			return
-		}
-		go func() {
-			f, err := c.CreateFolder(context.Background(), tr.T("reader", "newCategoryName"))
-
-			// Same discipline as subscribeURL: the rail's category list is
-			// fetched HERE, in this same goroutine, before the single PostAsync
-			// below — not via loadFolders(), whose own nested PostAsync is the
-			// one that never paints. Without this the editor opened on a
-			// category the rail never showed.
-			var folderList []*pb.Folder
-			okFolders := false
-			if err == nil {
-				if fl, ferr := c.ListFolders(context.Background()); ferr == nil {
-					folderList, okFolders = fl, true
-				}
-			}
-
-			ui.PostAsync(func() {
-				if err != nil {
-					notice.Set(tr.T("reader", "errAddCategory", i18n.Args{"err": serverText(tr, err)}))
-					return
-				}
-				if okFolders {
-					foldersGen.Set(foldersGen.Get() + 1)
-					folders.Set(folderList)
-				}
-				catID.Set(f.GetId())
-				catDraft.Set(f.GetName())
-				catErr.Set("")
-				catConfirm.Set(false)
-				platform.FocusField("category-name")
-			})
-		}()
+		platform.RememberFocus("category")
+		catID.Set(catNewID)
+		catDraft.Set("")
+		catErr.Set("")
+		catConfirm.Set(false)
+		platform.FocusField("category-name")
 	}
 	act.Get().openCategory = func(id string) {
 		for _, f := range folders.Get() {
@@ -4061,12 +4154,24 @@ func Reader(p readerProps) ui.Node {
 			return
 		}
 		if name == "" {
-			catErr.Set("A category needs a name.")
+			catErr.Set(tr.T("category", "needName"))
+			// The refused field takes focus, so a keyboard reader lands where the
+			// sentence is about and a screen reader hears it with the field.
+			platform.FocusField("category-name")
+			return
+		}
+		creating := id == catNewID
+		if catBusy.Get() {
 			return
 		}
 		catBusy.Set(true)
 		go func() {
-			_, err := c.RenameFolder(context.Background(), id, name)
+			var err error
+			if creating {
+				_, err = c.CreateFolder(context.Background(), name)
+			} else {
+				_, err = c.RenameFolder(context.Background(), id, name)
+			}
 
 			// Same discipline as subscribeURL: the rail's category list is
 			// fetched HERE, in this same goroutine, before the single PostAsync
@@ -4084,9 +4189,17 @@ func Reader(p readerProps) ui.Node {
 			ui.PostAsync(func() {
 				catBusy.Set(false)
 				if err != nil {
-					catErr.Set(serverText(tr, err))
+					msg := serverText(tr, err)
+					if creating {
+						msg = tr.T("reader", "errAddCategory", i18n.Args{"err": msg})
+					}
+					catErr.Set(msg)
+					platform.FocusField("category-name")
 					return
 				}
+				// Saved: focus goes back to what opened the editor, which the
+				// dialog's teardown would otherwise drop on <body> (G14).
+				platform.RestoreFocus("category")
 				catID.Set("")
 				if okFolders {
 					foldersGen.Set(foldersGen.Get() + 1)
@@ -4104,13 +4217,14 @@ func Reader(p readerProps) ui.Node {
 			})
 		}()
 	}
+	act.Get().categoryArmed = func() bool { return catConfirm.Get() }
 	// Deleting is two presses on the same button rather than a second dialog.
 	// The first arms it and says what will happen to the feeds inside; the second
 	// does it. A modal on top of a modal to confirm an action that unfiles rather
 	// than destroys is more ceremony than the act deserves.
 	act.Get().deleteCategory = func() {
 		c, id := client.Get(), catID.Get()
-		if c == nil || id == "" {
+		if c == nil || id == "" || id == catNewID {
 			return
 		}
 		if !catConfirm.Get() {
@@ -4841,11 +4955,11 @@ func Reader(p readerProps) ui.Node {
 				warmAhead()
 				return
 			}
-			notice.Set(tr.T("reader", "noSmartVoice"))
+			sayVoice(tr.T("reader", "noSmartVoice"))
 		}
 		platform.AudioStop()
 		if !platform.SpeechAvailable() {
-			notice.Set(tr.T("reader", "noSpeech"))
+			sayVoice(tr.T("reader", "noSpeech"))
 			speakID.Set("")
 			return
 		}
@@ -4913,6 +5027,7 @@ func Reader(p readerProps) ui.Node {
 		speakState.Set("paused")
 	}
 	act.Get().listenStop = func() {
+		dropVoiceNotice()
 		platform.SpeechStop()
 		platform.AudioStop()
 		speakID.Set("")
@@ -4930,7 +5045,7 @@ func Reader(p readerProps) ui.Node {
 		saveSetting(map[string]string{"tts.smartPlus": strconv.FormatBool(next)},
 			map[string]string{"tts.smartPlus": strconv.FormatBool(!next)})
 		if next {
-			notice.Set(tr.T("reader", "smartVoiceOn"))
+			sayVoice(tr.T("reader", "smartVoiceOn"))
 		}
 	}
 	// digestVoice swaps the whole article for about a minute of summary.
@@ -6199,6 +6314,7 @@ func Reader(p readerProps) ui.Node {
 		// reached from the keyboard at all.
 		platform.FocusField(roleTagSettingsClose)
 		tsSaving.Set(false)
+		tsErr.Set("")
 		// The field is seeded with the OVERRIDE, not the resolved name. Seeding
 		// it with the tag's own name would make every panel look renamed, and
 		// pressing Rename without touching anything would store a copy of the
@@ -6208,8 +6324,16 @@ func Reader(p readerProps) ui.Node {
 	}
 	act.Get().closeTagSettings = func() {
 		platform.RestoreFocus("tagSettings")
+		// A rename re-sorts the rail, which replaces the gear the panel was
+		// opened from; the remembered element is then detached and RestoreFocus
+		// does nothing, so focus fell to <body> (G14). The gear is findable by its
+		// role. Only when the panel is open: Escape reaches this on every press.
+		if id := tsOpen.Get(); id != "" {
+			platform.FocusField(tagGearRole(id))
+		}
 		tsOpen.Set("")
 		tsLabel.Set("")
+		tsErr.Set("")
 	}
 	act.Get().patchTag = func(req *pb.UpdateTagRequest) {
 		c := client.Get()
@@ -6241,9 +6365,13 @@ func Reader(p readerProps) ui.Node {
 			ui.PostAsync(func() {
 				tsSaving.Set(false)
 				if err != nil {
-					notice.Set(tr.T("reader", "errSaveTag", i18n.Args{"err": serverText(tr, err)}))
+					// In the panel, with the field flagged and focused — the banner
+					// is behind the scrim (G5).
+					tsErr.Set(tr.T("reader", "errSaveTag", i18n.Args{"err": serverText(tr, err)}))
+					platform.FocusField("tag-label")
 					return
 				}
+				tsErr.Set("")
 				// The whole rail is refetched rather than the one row patched.
 				// The label is what the list is SORTED by, so a rename moves the
 				// row — and a locally patched row would keep its old position
@@ -6593,6 +6721,7 @@ func Reader(p readerProps) ui.Node {
 			stats:  serverStats.Get() != nil || statsLoading.Get(),
 			myFeed: myFeedProfile.Get() != nil || myFeedLoading.Get(),
 			smart:  smartCfg.Get() != nil || smartLoading.Get(),
+			owner:  p.owner,
 		}
 		for _, n := range settingsNeeds(settingsTab(setTab.Get()), have) {
 			switch n {
@@ -6619,6 +6748,27 @@ func Reader(p readerProps) ui.Node {
 		})
 		return nil
 	}, []any{pane.Get() == viewSettings, setTab.Get(), client.Get() != nil})
+	// Entering Settings puts focus ON the settings pane (G14). Opened with `,` or
+	// the gear, the control that had focus is hidden by the same render and focus
+	// falls to <body>, so the next Tab landed on whatever came first in the
+	// document — "Unread only", in the pane that is no longer on screen. Landing
+	// on the pane itself (tabindex -1, see settings.go) makes the next Tab the
+	// first tab of the screen the reader asked for. Only on ENTRY, not on a tab
+	// change: pressing a tab must leave focus on the tab.
+	//
+	// A Ref remembers the last value because effect dependencies here are a hint,
+	// not a guarantee (see Discover's loadedFor): without it this ran on every
+	// render of Reader and took focus back from the control the reader had just
+	// pressed — the armed Sign out button, for one.
+	settingsOpen := pane.Get() == viewSettings
+	wasSettingsOpen := ui.UseRef(false)
+	ui.UseEffect(func() func() {
+		if settingsOpen && !wasSettingsOpen.Get() {
+			platform.FocusFirst(".panes", ".pane-settings")
+		}
+		wasSettingsOpen.Set(settingsOpen)
+		return nil
+	}, []any{settingsOpen})
 	act.Get().setLogLevel = func(level string) {
 		logLevel.Set(level)
 		act.Get().loadStats()
@@ -6638,6 +6788,9 @@ func Reader(p readerProps) ui.Node {
 		}
 		myFeedConfirmDelete.Set("")
 		myFeedConfirmReset.Set("")
+		// The folder editor's delete arms in place too (G15): Escape and a press
+		// elsewhere answer it "no" like the rest.
+		catConfirm.Set(false)
 	}
 
 	// --- signing out, on the Account tab --------------------------------------
@@ -7000,14 +7153,14 @@ func Reader(p readerProps) ui.Node {
 		}
 		dataNote.Set("")
 		dataNoteBad.Set(false)
-		platform.PickFile(opmlAccept, func(name string, data []byte) {
+		platform.PickFile(opmlAccept, func(name string, file []byte) {
 			// The callback lands on the JS event loop, outside GWC's dispatch,
 			// so every write goes through PostAsync — and the RPC goes on a
 			// goroutine rather than being awaited here: a blocking call inside a
 			// js.Func deadlocks the whole client against its own reply.
 			ui.PostAsync(func() {
 				dataFile.Set(name)
-				if len(data) == 0 {
+				if len(file) == 0 {
 					dataNote.Set(tr.T("data", "readFailed"))
 					dataNoteBad.Set(true)
 					return
@@ -7017,21 +7170,59 @@ func Reader(p readerProps) ui.Node {
 				// it up would put last import's numbers under this import's
 				// spinner, which is the screen saying two things at once.
 				dataResult.Set(nil)
+				// The file is walked a chunk at a time (data.ImportChunk), never
+				// sent whole: one call for 3,000 rows outlasted the client's
+				// deadline, was cancelled half way and left no report (G1). Each
+				// answer is added to a running report and the screen says "n of
+				// m" between calls; a call that fails leaves the report SO FAR
+				// standing beside the failure, because what was imported is
+				// still true and is the first thing somebody asks.
 				go func() {
-					res, err := c.ImportOPML(context.Background(), data)
+					var acc *pb.ImportOpmlResponse
+					var err error
+					for start := 0; ; {
+						var res *pb.ImportOpmlResponse
+						res, err = c.ImportOPMLChunk(context.Background(), file, start, data.ImportChunk)
+						if err != nil {
+							break
+						}
+						acc = data.MergeImport(acc, res)
+						// Done, or a server that answered without moving on: a walk that
+						// cannot advance ends rather than asking for the same rows forever.
+						if data.ImportDone(res) || int(res.GetNext()) <= start {
+							break
+						}
+						start = int(res.GetNext())
+						done, total := start, int(res.GetTotal())
+						ui.PostAsync(func() {
+							dataNote.Set(tr.T("data", "importProgress", i18n.Args{
+								"done": thousands(tr, done), "total": thousands(tr, total)}))
+						})
+					}
 					ui.PostAsync(func() {
 						dataBusy.Set(false)
+						dataNote.Set("")
 						if err != nil {
-							dataNote.Set(tr.T("data", "importFailed",
-								i18n.Args{"err": serverText(tr, err)}))
+							if acc != nil {
+								// Part of the file is in; say how far, not just why.
+								dataNote.Set(tr.T("data", "importStopped", i18n.Args{
+									"err":   serverText(tr, err),
+									"done":  thousands(tr, int(acc.GetNext())),
+									"total": thousands(tr, int(acc.GetTotal())),
+								}))
+							} else {
+								dataNote.Set(tr.T("data", "importFailed", i18n.Args{"err": serverText(tr, err)}))
+							}
 							dataNoteBad.Set(true)
-							return
 						}
-						dataResult.Set(res)
+						if acc != nil {
+							dataResult.Set(acc)
+						}
 						// The sidebar is the point of the whole feature, and the
 						// categories with it: an import that files 151 feeds into
 						// eight categories and leaves the rail showing neither
-						// looks exactly like an import that did nothing.
+						// looks exactly like an import that did nothing. Reloaded
+						// even after a failure, because the rows before it landed.
 						loadFolders()
 						loadFeeds()
 					})
@@ -7123,6 +7314,7 @@ func Reader(p readerProps) ui.Node {
 				// banner over a screen that otherwise rendered fine.
 				if merr == nil {
 					smartModels.Set(models.GetModels())
+					smartKeyRejected.Set(models.GetKeyRejected())
 				}
 			})
 		}()
@@ -7142,15 +7334,26 @@ func Reader(p readerProps) ui.Node {
 		smartErr.Set("")
 		go func() {
 			cfg, err := c.SetSmartConfig(context.Background(), key, false, "")
+			// A new key is a new verdict: the listing is the one free call that
+			// shows whether the provider takes it, so it is asked again, and the
+			// old "rejected" is not left standing under a key that replaced it.
+			var models *pb.ListModelsResponse
+			if err == nil {
+				models, _ = c.SmartModels(context.Background())
+			}
 			ui.PostAsync(func() {
 				smartKeyDraft.Set("")
 				platform.ClearField("smart-key")
 				if err != nil {
-					smartErr.Set(serverText(tr, err))
+					smartErr.FailAt(serverText(tr, err), "smart-key")
 					return
 				}
 				smartWrites.Set(smartWrites.Get() + 1)
 				smartCfg.Set(cfg)
+				smartKeyRejected.Set(models.GetKeyRejected())
+				if ms := models.GetModels(); len(ms) > 0 {
+					smartModels.Set(ms)
+				}
 				smartNotice.Set(tr.T("smart", "keySaved"))
 			})
 		}()
@@ -7194,7 +7397,16 @@ func Reader(p readerProps) ui.Node {
 					after(err == nil)
 				}
 				if err != nil {
-					smartErr.Set(serverText(tr, err))
+					// The refused field says so and takes focus: the address for a
+					// route change, the key for a key change (G16).
+					role := ""
+					switch {
+					case ch.BaseURL != nil:
+						role = "smart-jev-base"
+					case ch.Key != "":
+						role = "smart-jev-key"
+					}
+					smartErr.FailAt(serverText(tr, err), role)
 					return
 				}
 				smartWrites.Set(smartWrites.Get() + 1)
@@ -7224,6 +7436,11 @@ func Reader(p readerProps) ui.Node {
 	act.Get().setJEVRoute = func(route string) {
 		if data.JEVRouteNeedsBaseURL(route) {
 			jevRoute.Set(route)
+			// Nothing was saved, so nothing may still say it was: the previous
+			// save's "Route saved." used to stay up beside this pick, and read as
+			// the proxy route having been stored with no address (G16).
+			smartNotice.Set("")
+			smartErr.Set("")
 			return
 		}
 		jevRoute.Set("")
@@ -7289,14 +7506,31 @@ func Reader(p readerProps) ui.Node {
 		smartErr.Set("")
 		model := strings.TrimSpace(smartModelDraft.Get())
 		go func() {
-			cfg, err := c.SetSmartConfig(context.Background(), "", false, model)
+			// Blank is the default (SetSmartModel sets the reset flag): the server
+			// reads an empty `model` as "leave it alone", so the old call saved
+			// nothing and the old model stayed (G8).
+			cfg, err := c.SetSmartModel(context.Background(), model)
 			ui.PostAsync(func() {
 				if err != nil {
-					smartErr.Set(serverText(tr, err))
+					role := "smart-model"
+					if len(smartModels.Get()) > 0 && !smartModelCustom.Get() {
+						role = "smart-model-select"
+					}
+					smartErr.FailAt(serverText(tr, err), role)
 					return
 				}
 				smartWrites.Set(smartWrites.Get() + 1)
 				smartCfg.Set(cfg)
+				// The field mirrors what the server now holds, so a reset shows
+				// the placeholder and not the model that was just replaced.
+				smartModelDraft.Set(cfg.GetModel())
+				// A confirmation, which the save never had: the same press with
+				// a typo and with a valid id looked identical.
+				if model == "" {
+					smartNotice.Set(tr.T("smart", "modelReset", i18n.Args{"model": cfg.GetDefaultModel()}))
+				} else {
+					smartNotice.Set(tr.T("smart", "modelSaved", i18n.Args{"model": cfg.GetModel()}))
+				}
 			})
 		}()
 	}
@@ -7902,6 +8136,13 @@ func Reader(p readerProps) ui.Node {
 		next := !helpOpen.Get()
 		if next {
 			platform.RememberFocus("help")
+			// An armed Mark all read is a question about THIS list, asked a moment
+			// ago. A sheet opened over it and closed again returned to a banner
+			// still waiting for its answer (G15) — and the reader, who has since
+			// read the keyboard shortcuts, is entitled to be asked again rather
+			// than to have the question outlive their attention. Disarmed without
+			// the focus hop disarmMarkAll makes: focus is going into the sheet.
+			markAllArmed.Set(false)
 		} else {
 			platform.RestoreFocus("help")
 		}
@@ -7920,6 +8161,7 @@ func Reader(p readerProps) ui.Node {
 	// The palette.
 	act.Get().openPalette = func() {
 		platform.RememberFocus("palette")
+		markAllArmed.Set(false)
 		paletteQuery.Set("")
 		paletteActive.Set(0)
 		paletteOpen.Set(true)
@@ -8947,7 +9189,8 @@ func Reader(p readerProps) ui.Node {
 				feeds:      len(feeds.Get()),
 				feedsKnown: !feedsLoading.Get(),
 				missing: sel.Get().Search == "" &&
-					scopeMissing(sel.Get(), !feedsLoading.Get(), feeds.Get(), tags.Get(), folders.Get()),
+					scopeMissing(sel.Get(), loadedLists{feeds: !feedsLoading.Get(), tags: tagsKnown.Get(), folders: foldersKnown.Get()},
+						feeds.Get(), tags.Get(), folders.Get()),
 				hasMore:     nextCursor.Get() != "",
 				loadingMore: loadingMore.Get(),
 				loading:     itemsLoading.Get(),
@@ -9082,6 +9325,8 @@ func Reader(p readerProps) ui.Node {
 						busy:        smartBusy.Get(),
 						notice:      smartNotice.Get(),
 						err:         smartErr.Get(),
+						errRole:     smartErrRole.Get(),
+						keyRejected: smartKeyRejected.Get(),
 						loading:     smartLoading.Get(),
 						feedPlus:    feedPlus.Get(),
 						models:      smartModels.Get(),
@@ -9254,15 +9499,16 @@ func Reader(p readerProps) ui.Node {
 			smartCategorizeOn: smartCategorize.Get(),
 		}),
 		categoryDialog(tr, categoryProps{
-			open:    catID.Get() != "",
-			id:      catID.Get(),
-			name:    folderName(folders.Get(), catID.Get()),
-			draft:   catDraft.Get(),
-			feeds:   len(feedsInFolder(feeds.Get(), catID.Get())),
-			busy:    catBusy.Get(),
-			err:     catErr.Get(),
-			confirm: catConfirm.Get(),
-			onInput: onCatNameInput,
+			open:     catID.Get() != "",
+			id:       catID.Get(),
+			name:     folderName(folders.Get(), catID.Get()),
+			draft:    catDraft.Get(),
+			feeds:    len(feedsInFolder(feeds.Get(), catID.Get())),
+			busy:     catBusy.Get(),
+			err:      catErr.Get(),
+			confirm:  catConfirm.Get(),
+			creating: catID.Get() == catNewID,
+			onInput:  onCatNameInput,
 		}),
 		tagSettings(tr, tagSettingsProps{
 			open: tsOpen.Get() != "",
@@ -9275,6 +9521,7 @@ func Reader(p readerProps) ui.Node {
 			onLabelEdit: onTagLabelInput,
 			feeds:       feedsForTag(feeds.Get(), tagFeeds.Get(), tsOpen.Get()),
 			saving:      tsSaving.Get(),
+			err:         tsErr.Get(),
 		}),
 		// LAST, and above everything: the slideshow is a mode rather than a
 		// dialog, so nothing behind it is addressable while it runs. It renders

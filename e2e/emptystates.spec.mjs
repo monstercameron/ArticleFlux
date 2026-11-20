@@ -21,6 +21,15 @@ import { test, expect, boot, openStream, isPhone } from './fixtures.mjs';
  * cheap way to construct (a tag or category stripped of every feed). Those four
  * are left to whoever next touches `emptyList` rather than forced here.
  */
+/**
+ * hint is the second line an empty list gives. A phone has no keyboard to press
+ * a key on, so there the same advice is worded for a finger (view.keyHint) — the
+ * phone project is the one that proves the touch variant is the one served.
+ */
+async function hint(page, keys, touch) {
+  return (await isPhone(page)) ? touch : keys;
+}
+
 test.describe('empty states', () => {
   test('a search that matches nothing says so, and how to recover', async ({ page }) => {
     await boot(page);
@@ -42,7 +51,8 @@ test.describe('empty states', () => {
 
     const empty = page.locator('.pane-list .empty');
     await expect(empty.locator('strong')).toHaveText('Nothing saved for later');
-    await expect(empty).toContainText('Press t on an article to put it here.');
+    await expect(empty).toContainText(await hint(page,
+      'Press t on an article to put it here.', 'Use Read later on an article to put it here.'));
   });
 
   test('Liked says nothing is liked, before anything is', async ({ page }) => {
@@ -51,7 +61,8 @@ test.describe('empty states', () => {
 
     const empty = page.locator('.pane-list .empty');
     await expect(empty.locator('strong')).toHaveText('Nothing liked yet');
-    await expect(empty).toContainText('Press l on an article, or use ▲ Like.');
+    await expect(empty).toContainText(await hint(page,
+      'Press l on an article, or use ▲ Like.', 'Use ▲ Like on an article to put it here.'));
   });
 
   test('Notes says none are written, before any are', async ({ page }) => {
@@ -85,7 +96,8 @@ test.describe('empty states', () => {
 
     const empty = page.locator('.pane-list .empty');
     await expect(empty.locator('strong')).toHaveText('All caught up');
-    await expect(empty).toContainText('Press u to show everything again.');
+    await expect(empty).toContainText(await hint(page,
+      'Press u to show everything again.', 'Everything you have already read is still in All articles.'));
   });
 
   test('the rail\'s Unread STREAM shows the correct empty copy once caught up', async ({ page }) => {
@@ -116,6 +128,7 @@ test.describe('empty states', () => {
 
     const empty = page.locator('.pane-list .empty');
     await expect(empty.locator('strong')).toHaveText('All caught up');
-    await expect(empty).toContainText('Press u to show everything again.');
+    await expect(empty).toContainText(await hint(page,
+      'Press u to show everything again.', 'Everything you have already read is still in All articles.'));
   });
 });

@@ -12,6 +12,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
+	"github.com/monstercameron/ArticleFlux/client/platform"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
@@ -146,6 +147,65 @@ type smartProps struct {
 	// (ListLanguagesResponse.translate_articles_enabled) — the one fact about
 	// the Smart+ config a member may read, shown on their state of this tab.
 	translateOn bool
+
+	// keyRejected is the provider having answered the stored key with a 401 or
+	// 403 (ListModelsResponse.key_rejected). The key row used to say "configured"
+	// and the ladder "ready" beside a key the provider had already refused — the
+	// state is presence, not proof, and this is the one proof that is free (G9).
+	keyRejected bool
+	// errRole is the data-role of the field the last error was about, "" when it
+	// is about none. Set with the error (smartLine.FailAt), so the refused field
+	// can say so itself with aria-invalid instead of leaving the reader to match
+	// a sentence at the foot of the tab to the box that caused it (G16).
+	errRole string
+}
+
+// smartLine is one of the Smart+ tab's two status lines — the confirmation and
+// the refusal — with the rule they share: only one of them is ever showing.
+//
+// They were two independent states, so a refusal stacked under the previous
+// save's "Route saved." and a confirmation lingered under a later failure
+// ("Readers can translate articles now" after a model save, G16). Making them
+// exclusive here, once, means the twenty places that set one do not each have to
+// remember to clear the other.
+type smartLine struct {
+	self, other, role ui.State[string]
+	// isErr marks the refusal line, which owns role: any change to it resets
+	// which field it points at.
+	isErr bool
+}
+
+func (l smartLine) Get() string { return l.self.Get() }
+
+// Set shows v on this line and takes the other one down. Clearing this line
+// (v == "") leaves the other alone, because "nothing to say" is not a decision
+// about what the other says.
+func (l smartLine) Set(v string) {
+	if v != "" {
+		l.other.Set("")
+	}
+	if v != "" || l.isErr {
+		l.role.Set("")
+	}
+	l.self.Set(v)
+}
+
+// FailAt shows a refusal that is about one field: marks it invalid and moves
+// focus to it, so a keyboard reader lands where the fix is.
+func (l smartLine) FailAt(msg, role string) {
+	l.Set(msg)
+	if msg != "" && role != "" {
+		l.role.Set(role)
+		platform.FocusField(role)
+	}
+}
+
+// invalidIf marks a field's aria-invalid when the last refusal was about it.
+func invalidIf(aria map[string]string, p smartProps, roles ...string) map[string]string {
+	if p.err != "" && slices.Contains(roles, p.errRole) {
+		aria["invalid"] = "true"
+	}
+	return aria
 }
 
 func settingsSmart(tr i18n.Runtime, p smartProps) []ui.Node {
@@ -202,6 +262,10 @@ func smartKeySection(tr i18n.Runtime, p smartProps) []ui.Node {
 		if h := cfg.GetKeyHint(); h != "" {
 			state += " · " + tr.T("smart", "keyEnding", i18n.Args{"hint": h})
 		}
+		// Presence is not proof, and the provider has said which this is.
+		if p.keyRejected {
+			state += " · " + tr.T("smart", "keyRejected")
+		}
 	}
 
 	rows := []ui.Node{
@@ -216,7 +280,7 @@ func smartKeySection(tr i18n.Runtime, p smartProps) []ui.Node {
 				// Named "Key" by its label and described by the state line
 				// under it ("Configured · ending 4f2a"), which is the thing a
 				// reader landing here wants to know before typing over it.
-				Aria: fieldAria(fieldSmartKey, state),
+				Aria: invalidIf(fieldAria(fieldSmartKey, state), p, "smart-key"),
 				// A password field, and autocomplete off: a browser offering
 				// to save an API key into the reader's password manager
 				// under this site's name is a credential in a place nobody
@@ -244,6 +308,10 @@ func smartKeySection(tr i18n.Runtime, p smartProps) []ui.Node {
 		rows = append(rows, armableRemove(tr, armKeyClear, p.armed, actSmartKeyClear,
 			tr.T("smart", "keyClear"), tr.T("smart", "keyClearWarn"),
 			actSmartKeyClearDo, tr.T("smart", "keyClearConfirm")))
+	}
+	if p.keyRejected {
+		rows = append(rows, html.Div(html.Props{Class: "set-note", Data: map[string]string{"role": "smart-key-rejected"}},
+			html.Text(tr.T("smart", "keyRejectedNote"))))
 	}
 	if cfg.GetFromEnvironment() {
 		rows = append(rows, html.Div(html.Props{Class: "set-note"},
@@ -278,6 +346,10 @@ func smartLadderSection(tr i18n.Runtime, p smartProps) []ui.Node {
 	modelState := tr.T("smart", "rungNoKey")
 	if rungs.Model {
 		modelState = tr.T("smart", "rungReady")
+		// "ready" is presence; the provider's refusal of the key is proof.
+		if p.keyRejected {
+			modelState = tr.T("smart", "rungRejected")
+		}
 	}
 	model := strings.TrimSpace(p.cfg.GetModel())
 	if model == "" {
@@ -330,7 +402,7 @@ func smartJEVSection(tr i18n.Runtime, p smartProps) []ui.Node {
 				Value:       p.jevKeyDraft,
 				OnInput:     p.onJEVKeyEdit,
 				Data:        map[string]string{"role": "smart-jev-key"},
-				Aria:        fieldAria(fieldSmartJEVKey, state),
+				Aria:        invalidIf(fieldAria(fieldSmartJEVKey, state), p, "smart-jev-key"),
 				// Exactly the OpenAI key field's attributes, for its reasons
 				// (smartKeySection): no password manager, no autocorrect.
 				Raw: credentialFieldAttrs(),
@@ -387,7 +459,7 @@ func smartJEVSection(tr i18n.Runtime, p smartProps) []ui.Node {
 				Value:       base,
 				OnInput:     p.onJEVBaseEdit,
 				Data:        map[string]string{"role": "smart-jev-base"},
-				Aria:        fieldAria(fieldSmartJEVBase, tr.T("smart", "jevBaseHint")),
+				Aria:        invalidIf(fieldAria(fieldSmartJEVBase, tr.T("smart", "jevBaseHint")), p, "smart-jev-base"),
 				// An address, not prose: a keyboard that capitalises the
 				// scheme has typed a URL the check refuses.
 				Raw: map[string]any{"autocomplete": "off", "spellcheck": "false",
@@ -459,10 +531,11 @@ func settingsSmartMember(tr i18n.Runtime, p smartProps) []ui.Node {
 // actual defect a reader would see as "this looks broken", not a styling
 // detail to polish later; a picker only ever asks one question at a time.
 func smartModelSection(tr i18n.Runtime, p smartProps) []ui.Node {
+	// The draft alone, because Reader seeds it from the stored model on every
+	// load and after every save (smartModelDraft): an empty draft is the default
+	// on purpose, and falling back to the stored model here would put the old
+	// model back on screen the moment somebody chose "Default" (G8).
 	current := strings.TrimSpace(p.modelDraft)
-	if current == "" {
-		current = strings.TrimSpace(p.cfg.GetModel())
-	}
 
 	// Custom entry is offered whenever there IS a list to fall back from, and
 	// forced when there is not — an empty list is not a choice between two
@@ -477,11 +550,21 @@ func smartModelSection(tr i18n.Runtime, p smartProps) []ui.Node {
 	modelHint := tr.T("smart", "modelDefault", i18n.Args{"model": p.cfg.GetDefaultModel()})
 	modelAria := fieldAria(fieldSmartModel, modelHint)
 	modelAria["label"] = tr.T("smart", "modelAria")
+	invalidIf(modelAria, p, "smart-model", "smart-model-select")
 
 	var control ui.Node
 	if showList {
 		seen := map[string]bool{}
-		options := make([]ui.Node, 0, len(p.models)+1)
+		options := make([]ui.Node, 0, len(p.models)+2)
+		// The default is a choice like any other, and first: a picker with no
+		// blank has no way to say "go back to the default", which the text field
+		// does by being cleared (G8). Its value is the empty string, which
+		// saveSmartModel reads as the reset.
+		options = append(options, html.Option(
+			// Raw, because an empty Value is omitted and an option with no value
+			// attribute submits its own text — "Default (gpt-x)" — as the model.
+			html.Props{Raw: map[string]any{"value": ""}, Selected: current == ""},
+			html.Text(tr.T("smart", "modelDefaultOption", i18n.Args{"model": p.cfg.GetDefaultModel()}))))
 		// The currently configured model is always an option, even one the
 		// live list did not include — an account that has lost access to a
 		// model, or a value typed in before this list existed, must not
@@ -717,7 +800,10 @@ func langFillStatus(tr i18n.Runtime, current string, p smartProps) []ui.Node {
 		next = tr.T("smart", "langNotOwner")
 	case f.idle == "no_key":
 		// langNeedsKey, below the status, already says this to an owner.
-	case f.failed:
+	case f.failed || f.idle == "failed":
+		// A loop that ended on a transport error, or one whose server-side fill
+		// stopped on a provider error (idle "failed"): either way the count above
+		// is where it stopped, and saying so is the point (G18).
 		next = tr.T("smart", "langFillFailed")
 	default:
 		// The fill ran and some keys came back unusable: they stay English

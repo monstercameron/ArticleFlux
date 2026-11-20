@@ -1,4 +1,4 @@
-import { test, expect, boot } from './fixtures.mjs';
+import { test, expect, boot, storeFakeKey } from './fixtures.mjs';
 
 /**
  * Discover (§18.7, M16): sites the reader does not follow yet.
@@ -34,7 +34,10 @@ import { test, expect, boot } from './fixtures.mjs';
 
 async function openDiscover(page) {
   await boot(page);
-  await page.locator('[data-action="open-discover"]').first().click();
+  // Smart+ review is offered only where the server has a key to run it with, and
+  // the harness has none — so these specs store a placeholder first.
+  await storeFakeKey(page);
+  await page.locator('[data-action="settings-tab"][data-value="discover"]').click();
   await expect(page.locator('.set-tabs')).toBeVisible();
   await expect(page.locator('[data-action="settings-tab"][data-value="discover"]'))
     .toHaveAttribute('aria-current', 'true');
@@ -54,6 +57,21 @@ test.describe('discover', () => {
     await page.keyboard.press('Escape').catch(() => {});
   });
 
+  // The harness instance has no model key. Offering a switch that cannot do
+  // anything, over a page that only works behind it, is the page lying about
+  // what it can do — so it says why instead, and offers nothing to press.
+  test('with no key on the server it offers no Smart+ review, and says why', async ({ page }) => {
+    await boot(page);
+    await page.locator('[data-action="open-discover"]').first().click();
+    await expect(page.locator('#discover-page')).toBeVisible();
+    await expect(page.locator('.discover-gate')).toContainText('no OpenAI key', { timeout: 30_000 });
+    await expect(page.locator('.discover-smartplus')).toHaveCount(0);
+    await expect(page.locator('.discover-refresh')).toHaveCount(0);
+    // One heading style across the settings tabs: the group heading, not a title
+    // of its own.
+    await expect(page.locator('.discover-head .fs-group-title')).toHaveText(/discover/i);
+  });
+
   test('opens with Smart+ review off and shows the gate, not the list', async ({ page }) => {
     await openDiscover(page);
 
@@ -65,7 +83,7 @@ test.describe('discover', () => {
     await expect(page.locator('.discover-refresh')).toBeDisabled();
 
     // The panel is not blank: real copy is on screen, not just an empty shell.
-    await expect(page.locator('.discover-title')).toHaveText(/discover/i);
+    await expect(page.locator('.discover-head .fs-group-title')).toHaveText(/discover/i);
     await expect(page.locator('.discover-gate')).not.toBeEmpty();
   });
 

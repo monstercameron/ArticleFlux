@@ -85,8 +85,18 @@ func (d readerListeners) wire() {
 	// listeners read the field's own data attribute, which is the id.
 	ui.UseEffect(func() func() {
 		l := platform.OnDelegatedInput("#app", "data-note-id", func(id, body string) {
+			// Recorded on this stack, before the PostAsync, so a tab that closes in
+			// the next frame still knows what was typed (G20).
+			act.Get().noteTyped(id, body)
 			ui.PostAsync(func() { act.Get().editNote(id, body) })
 		})
+		return l.Release
+	}, []any{})
+
+	// Closing or reloading the tab with a note still in its 800ms debounce used
+	// to lose the text (G20). The outbox takes it synchronously instead.
+	ui.UseEffect(func() func() {
+		l := platform.OnPageHide(func() { act.Get().flushNotes() })
 		return l.Release
 	}, []any{})
 
@@ -472,6 +482,15 @@ func (d readerListeners) wire() {
 		return l.Release
 	}, []any{})
 }
+
+// The rail's keyboard vocabulary, in selectors. Primary items are what the up
+// and down arrows visit; a group is a row with the controls beside it, which
+// left and right step across.
+const (
+	railRovingItems   = ".rail-head button, .rail-scroll button"
+	railPrimaryItems  = ".feed-row, .rail-band-toggle"
+	railControlGroups = ".feed-slot, .rail-band"
+)
 
 // autoOpenPick is which article opens by itself when a list lands on an empty
 // reading pane: the saved article if it is in this list, else the first unread

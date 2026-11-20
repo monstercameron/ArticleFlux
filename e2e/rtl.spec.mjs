@@ -47,7 +47,10 @@ test.describe('right to left', () => {
 
   test('the document is right-to-left', async ({ page }) => {
     await shell(page);
-    await expect.poll(() => page.evaluate(() => document.documentElement.lang)).toBe('ar');
+    // lang describes the words on screen and dir the layout. This instance has no
+    // key, so no Arabic is cached and every string is the English fallback: the
+    // document says so, while the layout really is mirrored.
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
     // And the mirror sign the panes read is in force, not just the attribute.
     expect(await page.evaluate(() =>
       getComputedStyle(document.querySelector('.shell')).getPropertyValue('--dirx').trim()))
@@ -124,5 +127,32 @@ test.describe('right to left', () => {
   // reader who picks a language must still be able to read.
   test('a non-English interface still connects and lists articles', async ({ page }) => {
     await boot(page);
+  });
+
+  // The interface's direction is not the article's. Text took its direction from
+  // its own letters through CSS, but list markers, blockquote bars and indents
+  // follow the BOX, so an English article read in Arabic had its bullets on the
+  // wrong side of every line. The article body, and its headline, resolve their
+  // own direction (dir="auto") — an English one left to right, an Arabic one
+  // right to left, in the same interface.
+  test('an article takes its direction from its own text', async ({ page }) => {
+    await boot(page);
+    await page.locator('.item-row').first().click();
+    const body = page.locator('.article-body').first();
+    await expect(body).toHaveAttribute('dir', 'auto', { timeout: 30_000 });
+    await expect(page.locator('.article h1').first()).toHaveAttribute('dir', 'auto');
+
+    const dirs = await body.evaluate((el) => {
+      const probe = (html) => {
+        el.innerHTML = html;
+        return ['ul', 'ol', 'blockquote'].map((t) => getComputedStyle(el.querySelector(t)).direction);
+      };
+      return {
+        english: probe('<p>An English paragraph.</p><ul><li>one</li></ul><ol><li>two</li></ol><blockquote>quoted</blockquote>'),
+        arabic: probe('<p>فقرة عربية.</p><ul><li>واحد</li></ul><ol><li>اثنان</li></ol><blockquote>اقتباس</blockquote>'),
+      };
+    });
+    expect(dirs.english).toEqual(['ltr', 'ltr', 'ltr']);
+    expect(dirs.arabic).toEqual(['rtl', 'rtl', 'rtl']);
   });
 });

@@ -19,6 +19,10 @@ func TestSettingsNeeds(t *testing.T) {
 		{setMyFeed, settingsHave{}, []settingsNeed{needMyFeed}},
 		{setSmart, settingsHave{}, []settingsNeed{needSmart}},
 		{setPodcast, settingsHave{}, []settingsNeed{needSmart}},
+		{setDiscover, settingsHave{owner: true}, []settingsNeed{needSmart}},
+		{setDiscover, settingsHave{owner: true, smart: true}, nil},
+		// A member is refused the config, so Discover asks for nothing.
+		{setDiscover, settingsHave{}, nil},
 		{setServer, settingsHave{stats: true}, nil},
 		{setMyFeed, settingsHave{myFeed: true}, nil},
 		{setSmart, settingsHave{smart: true}, nil},

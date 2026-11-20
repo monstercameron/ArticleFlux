@@ -2,6 +2,7 @@ package reader
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -105,9 +106,11 @@ func TestImportOPMLTwiceReportsWhatWasAlreadyThere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
-	if res.Subscribed != 4 || res.AlreadySubscribed != 4 {
-		t.Errorf("second import: subscribed=%d alreadySubscribed=%d, want 4 and 4",
-			res.Subscribed, res.AlreadySubscribed)
+	// G12: Subscribed counts what THIS import created, so a repeat says nothing
+	// new — it used to say "Subscribed 4 · You already had 4".
+	if res.Subscribed != 0 || res.AlreadySubscribed != 4 || res.Shared != 0 {
+		t.Errorf("second import: subscribed=%d alreadySubscribed=%d shared=%d, want 0, 4 and 0",
+			res.Subscribed, res.AlreadySubscribed, res.Shared)
 	}
 	feeds, _, err := svc.ListFeeds(ctx, sc)
 	if err != nil {
@@ -240,5 +243,138 @@ func TestImportOPMLAgainstTheFreshRSSCorpus(t *testing.T) {
 	}
 	if len(feeds) != res.Subscribed {
 		t.Errorf("sidebar has %d feeds, report said %d", len(feeds), res.Subscribed)
+	}
+}
+
+// G12: a file that is partly followed already reports the two halves apart, and
+// a source that was on the server for somebody else counts as shared only when
+// the reader's subscription to it is new.
+func TestImportOPMLCountsOnlyNewSubscriptions(t *testing.T) {
+	svc, _, sc := testService(t)
+	ctx := context.Background()
+
+	if _, _, err := svc.SubscribeOnly(ctx, sc, "https://example.com/hn.xml", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc.ImportOPML(ctx, sc, []byte(freshRSSExport))
+	if err != nil {
+		t.Fatalf("ImportOPML: %v", err)
+	}
+	if res.Subscribed != 3 || res.AlreadySubscribed != 1 {
+		t.Errorf("subscribed=%d alreadySubscribed=%d, want 3 and 1", res.Subscribed, res.AlreadySubscribed)
+	}
+	// The same feed twice in one file is one subscription and one repeat.
+	const dup = `<?xml version="1.0"?><opml version="2.0"><body>
+  <outline type="rss" text="A" xmlUrl="https://example.com/dup.xml"/>
+  <outline type="rss" text="A again" xmlUrl="https://example.com/dup.xml"/>
+</body></opml>`
+	res, err = svc.ImportOPML(ctx, sc, []byte(dup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Subscribed != 1 || res.AlreadySubscribed != 1 {
+		t.Errorf("duplicate rows: subscribed=%d alreadySubscribed=%d, want 1 and 1", res.Subscribed, res.AlreadySubscribed)
+	}
+}
+
+// bigOPML builds n feeds across a few folders, the shape of the audit's 3,000-row file.
+func bigOPML(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><opml version="2.0"><head><title>Big</title></head><body>`)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, `<outline text="Folder %d">`, i%7)
+		fmt.Fprintf(&b, `<outline type="rss" text="Feed %d" xmlUrl="https://example.com/%d.xml"/>`, i, i)
+		b.WriteString(`</outline>`)
+	}
+	b.WriteString(`</body></opml>`)
+	return []byte(b.String())
+}
+
+// G1: a big file is walked in ranges whose counts add up to exactly what one
+// call would have said, Total and Next say where the walk stands, and the
+// first range reports the folders once (later ranges must not repeat them).
+func TestImportOPMLInRangesAddsUpToTheWholeFile(t *testing.T) {
+	svc, _, sc := testService(t)
+	ctx := context.Background()
+	data := bigOPML(450) // four ranges of 120 and a short last one
+
+	var subscribed, already, folders, next int
+	steps := 0
+	for next < 450 {
+		res, err := svc.ImportOPMLRange(ctx, sc, data, next, 120)
+		if err != nil {
+			t.Fatalf("range from %d: %v", next, err)
+		}
+		if res.Total != 450 {
+			t.Fatalf("Total = %d, want 450", res.Total)
+		}
+		if res.Next <= next {
+			t.Fatalf("Next = %d did not advance from %d", res.Next, next)
+		}
+		subscribed += res.Subscribed
+		already += res.AlreadySubscribed
+		folders += res.Folders
+		next = res.Next
+		steps++
+	}
+	if steps != 4 || subscribed != 450 || already != 0 {
+		t.Errorf("steps=%d subscribed=%d already=%d, want 4, 450 and 0", steps, subscribed, already)
+	}
+	if folders != 7 {
+		t.Errorf("folders summed over the ranges = %d, want 7 (reported once, by the first)", folders)
+	}
+	feeds, _, err := svc.ListFeeds(ctx, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 450 {
+		t.Fatalf("sidebar has %d feeds, want 450", len(feeds))
+	}
+	filed := 0
+	for _, f := range feeds {
+		if f.FolderID != "" {
+			filed++
+		}
+	}
+	if filed != 450 {
+		t.Errorf("%d of 450 feeds are filed; a later range lost its folder", filed)
+	}
+	// Walking it again changes nothing and says so.
+	res, err := svc.ImportOPMLRange(ctx, sc, data, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Subscribed != 0 || res.AlreadySubscribed != 450 || res.Next != 450 {
+		t.Errorf("repeat: subscribed=%d already=%d next=%d", res.Subscribed, res.AlreadySubscribed, res.Next)
+	}
+}
+
+// A range past the end is empty and done, not an error: the walk's last step may
+// land exactly on the boundary.
+func TestImportOPMLRangePastTheEndIsDone(t *testing.T) {
+	svc, _, sc := testService(t)
+	res, err := svc.ImportOPMLRange(context.Background(), sc, bigOPML(5), 99, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 5 || res.Next != 5 || res.Subscribed != 0 {
+		t.Errorf("past the end: %+v", res)
+	}
+}
+
+// A bad row in the middle of a batch costs only itself, and what the batch wrote
+// before it is not rolled back with it.
+func TestImportOPMLBadRowInsideABatchCostsOnlyItself(t *testing.T) {
+	svc, _, sc := testService(t)
+	res, err := svc.ImportOPML(context.Background(), sc, []byte(`<?xml version="1.0"?><opml version="2.0"><body>
+  <outline type="rss" text="Good" xmlUrl="https://example.com/good.xml"/>
+  <outline type="rss" text="Nonsense" xmlUrl="not a url at all"/>
+  <outline type="rss" text="Also Good" xmlUrl="https://example.com/also.xml"/>
+</body></opml>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Subscribed != 2 || res.SkipCount() != 1 {
+		t.Errorf("subscribed=%d skips=%d, want 2 and 1", res.Subscribed, res.SkipCount())
 	}
 }

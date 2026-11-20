@@ -256,6 +256,18 @@ func referencedKeys(t *testing.T) map[string]string {
 			if !ok || len(call.Args) == 0 {
 				return true
 			}
+			// keyHint(tr, "namespace", "key") names <key> and its <key>Touch
+			// sibling, which it serves on a screen with no keyboard — so a hint
+			// read through tr.T instead leaves the sibling an orphan.
+			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "keyHint" && len(call.Args) == 3 {
+				ns, ok1 := literal(call.Args[1])
+				key, ok2 := literal(call.Args[2])
+				if ok1 && ok2 {
+					out[ns+"."+key] = fset.Position(call.Args[2].Pos()).String()
+					out[ns+"."+key+"Touch"] = fset.Position(call.Args[2].Pos()).String()
+				}
+				return true
+			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
 			if !ok || sel.Sel.Name != "T" {
 				return true

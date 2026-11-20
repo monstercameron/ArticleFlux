@@ -677,28 +677,51 @@ func TestBootRouteResumesOnAnUnknownAddress(t *testing.T) {
 	}
 }
 
+func TestNamesSlideshow(t *testing.T) {
+	cases := []struct {
+		base, path string
+		want       bool
+	}{
+		{"/", "/slideshow", true},
+		{"/", "/feed/abc/read/xyz/slideshow", true},
+		{"/", "/feed/abc/read/xyz", false},
+		{"/", "/", false},
+		{"/app/", "/app/unread/slideshow", true},
+		{"/app/", "/app/unread", false},
+	}
+	for _, c := range cases {
+		if got := namesSlideshow(c.base, c.path); got != c.want {
+			t.Errorf("namesSlideshow(%q, %q) = %v, want %v", c.base, c.path, got, c.want)
+		}
+	}
+}
+
 func TestScopeMissing(t *testing.T) {
 	feeds := []*pb.Feed{{Id: "s1", SourceId: "src1"}}
 	tags := []*pb.Tag{{Id: "t1"}}
 	folders := []*pb.Folder{{Id: "f1"}}
+	all := loadedLists{feeds: true, tags: true, folders: true}
 	cases := []struct {
 		name  string
 		sc    scope
-		known bool
+		known loadedLists
 		tags  []*pb.Tag
 		fold  []*pb.Folder
 		want  bool
 	}{
-		{"a feed it follows", scope{SourceID: "src1"}, true, tags, folders, false},
-		{"a feed by subscription id", scope{SourceID: "s1"}, true, tags, folders, false},
-		{"a feed it does not follow", scope{SourceID: "NOPE"}, true, tags, folders, true},
-		{"a feed before the rail has landed", scope{SourceID: "NOPE"}, false, tags, folders, false},
-		{"a tag it has", scope{TagID: "t1"}, true, tags, folders, false},
-		{"a tag it does not have", scope{TagID: "zzz"}, true, tags, folders, true},
-		{"a tag before tags have landed", scope{TagID: "zzz"}, true, nil, folders, false},
-		{"a category it has", scope{FolderID: "f1"}, true, tags, folders, false},
-		{"a category it does not have", scope{FolderID: "zzz"}, true, tags, folders, true},
-		{"a stream", scope{Unread: true}, true, tags, folders, false},
+		{"a feed it follows", scope{SourceID: "src1"}, all, tags, folders, false},
+		{"a feed by subscription id", scope{SourceID: "s1"}, all, tags, folders, false},
+		{"a feed it does not follow", scope{SourceID: "NOPE"}, all, tags, folders, true},
+		{"a feed before the rail has landed", scope{SourceID: "NOPE"}, loadedLists{tags: true, folders: true}, tags, folders, false},
+		{"a tag it has", scope{TagID: "t1"}, all, tags, folders, false},
+		{"a tag it does not have", scope{TagID: "zzz"}, all, tags, folders, true},
+		{"a tag before tags have landed", scope{TagID: "zzz"}, loadedLists{feeds: true, folders: true}, nil, folders, false},
+		{"a tag on an account with no tags", scope{TagID: "zzz"}, all, nil, folders, true},
+		{"a category it has", scope{FolderID: "f1"}, all, tags, folders, false},
+		{"a category it does not have", scope{FolderID: "zzz"}, all, tags, folders, true},
+		{"a category before folders have landed", scope{FolderID: "zzz"}, loadedLists{feeds: true, tags: true}, tags, nil, false},
+		{"a category on an account with no folders", scope{FolderID: "zzz"}, all, tags, nil, true},
+		{"a stream", scope{Unread: true}, all, tags, folders, false},
 	}
 	for _, c := range cases {
 		if got := scopeMissing(c.sc, c.known, feeds, c.tags, c.fold); got != c.want {

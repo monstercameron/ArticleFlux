@@ -18,6 +18,9 @@ func init() {
 
 		"nameLabel": "Name in the sidebar",
 		"nameHint":  "Clear it to go back to the tag's own name.",
+		// Said beside the field because a rename the server refuses used to look
+		// like nothing had happened (G5, G19). {max} is the store's own cap.
+		"nameLimit": "Up to {max} characters.",
 		"rename":    "✎ Rename",
 
 		"tagLabel": "The tag itself",

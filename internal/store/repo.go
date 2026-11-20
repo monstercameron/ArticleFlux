@@ -1222,102 +1222,13 @@ func (r *ReaderRepo) Subscribe(ctx context.Context, s Scope, n NewSubscription) 
 		return Feed{}, false, ErrNoScope
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	naturalKey, feedURL, siteURL, title := n.NaturalKey, n.FeedURL, n.SiteURL, n.Title
 	var sourceID string
 	var existed bool
 
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
-		// The folder is checked BEFORE the source is created, so a bad folder id
-		// cannot leave a half-done subscription behind. It is inside the
-		// transaction rather than before it because the folder could otherwise be
-		// deleted between the check and the write.
-		if n.FolderID != "" {
-			if err := checkFolder(ctx, tx, s, n.FolderID); err != nil {
-				return err
-			}
-		}
-		err := tx.QueryRowContext(ctx,
-			`SELECT id FROM sources WHERE natural_key = ?`, naturalKey).Scan(&sourceID)
-		switch {
-		case err == nil:
-			existed = true
-			// A previously deactivated source coming back is a resubscribe, not a
-			// new row: reactivating preserves every other tenant's history.
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE sources SET deactivated_at = NULL WHERE id = ?`, sourceID); err != nil {
-				return err
-			}
-		case errors.Is(err, sql.ErrNoRows):
-			sourceID = idgen.New()
-			kind := n.Kind
-			if kind == "" {
-				kind = "feed"
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO sources (id,natural_key,feed_url,site_url,title,kind,created_at,next_fetch_at)
-				VALUES (?,?,?,?,?,?,?,?)`,
-				sourceID, naturalKey, feedURL, siteURL, title, kind, now, now); err != nil {
-				return err
-			}
-			// The interval is applied as an override rather than as a column in
-			// the INSERT, so the schema keeps owning what "normal" is. A caller
-			// that says nothing gets the default without this file having to
-			// know what the default is.
-			if n.FetchIntervalS > 0 {
-				if _, err := tx.ExecContext(ctx,
-					`UPDATE sources SET fetch_interval_s = ? WHERE id = ?`,
-					n.FetchIntervalS, sourceID); err != nil {
-					return err
-				}
-			}
-		default:
-			return err
-		}
-
-		var folder any
-		if n.FolderID != "" {
-			folder = n.FolderID
-		}
-		// DO NOTHING on conflict, so re-adding a feed you already have is not an
-		// error — but a re-add that names a category DOES refile it. Silently
-		// ignoring the category because the subscription happened to exist would
-		// make the form lie about what it just did.
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO subscriptions (id,tenant_id,user_id,source_id,folder_id,title,created_at)
-			VALUES (?,?,?,?,?,?,?)
-			ON CONFLICT(user_id,source_id) DO NOTHING`,
-			idgen.New(), s.TenantID, s.UserID, sourceID, folder, title, now); err != nil {
-			return err
-		}
-		// Deliver what the source already holds.
-		//
-		// The mirror of ingest's delivery, and the case A14 makes inevitable:
-		// items are global, so subscribing to a feed somebody else already reads
-		// means subscribing to a source that is ALREADY FULL. Ingest will not run
-		// again for those items, so without this the new subscriber's unread
-		// count starts at zero and only counts what arrives from now on.
-		//
-		// DO NOTHING rather than upsert: re-subscribing to a feed you previously
-		// dropped must not wipe what you had read of it.
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO user_item_state (tenant_id, user_id, item_id, source_id,
-			                             published_at, rev, updated_at)
-			SELECT ?, ?, i.id, i.source_id, i.published_at, 0, ?
-			  FROM items i
-			 WHERE i.source_id = ? AND i.deactivated_at IS NULL
-			ON CONFLICT(user_id, item_id) DO NOTHING`,
-			s.TenantID, s.UserID, now, sourceID); err != nil {
-			return err
-		}
-
-		if n.FolderID != "" {
-			_, err := tx.ExecContext(ctx, `
-				UPDATE subscriptions SET folder_id = ?
-				 WHERE user_id = ? AND tenant_id = ? AND source_id = ?`,
-				n.FolderID, s.UserID, s.TenantID, sourceID)
-			return err
-		}
-		return nil
+		var err error
+		sourceID, existed, _, err = subscribeIn(ctx, tx, s, n, now)
+		return err
 	})
 	if err != nil {
 		return Feed{}, false, err
@@ -1332,7 +1243,178 @@ func (r *ReaderRepo) Subscribe(ctx context.Context, s Scope, n NewSubscription) 
 			return f, existed, nil
 		}
 	}
-	return Feed{SourceID: sourceID, FeedURL: feedURL, Title: title}, existed, nil
+	return Feed{SourceID: sourceID, FeedURL: n.FeedURL, Title: n.Title}, existed, nil
+}
+
+// SubscribeOutcome is what one row of SubscribeBatch did.
+type SubscribeOutcome struct {
+	SourceID string
+	// SourceExisted is A14's fact: the source was already on this server for
+	// somebody, so it was attached rather than created.
+	SourceExisted bool
+	// New is true only when THIS call created the reader's subscription. A row
+	// the reader already followed — from before, or earlier in the same batch —
+	// is false, which is what lets an import say "nothing new" on a repeat.
+	New bool
+	// Err is the row's own failure. A failed row writes nothing (it runs in a
+	// savepoint), so one bad row never costs the batch.
+	Err error
+}
+
+// SubscribeBatch attaches a reader to many sources in ONE transaction.
+//
+// It exists for OPML import, and the reason is the write pool: it holds exactly
+// one connection (see DB.Tx), so a mutation waits for every other mutation in
+// the process. Subscribe is one transaction per feed — and then lists every
+// feed the reader has, to hand one back — so a 3,000-row import was 3,000
+// commits plus 3,000 full ListFeeds scans (quadratic in the list's own size),
+// and every other reader's write queued behind that for minutes (G1 of the
+// second UX audit: a boot that took 33 s afterwards). One transaction per
+// BATCH is a handful of commits, and the caller chooses the batch size, so
+// the lock is held for as long as the caller decides and no longer.
+//
+// It does not return the Feed (that needs the ListFeeds scan this avoids); an
+// importer wants ids and facts, not rows to draw.
+func (r *ReaderRepo) SubscribeBatch(ctx context.Context, s Scope, in []NewSubscription) ([]SubscribeOutcome, error) {
+	if !s.Valid() {
+		return nil, ErrNoScope
+	}
+	out := make([]SubscribeOutcome, len(in))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+		for i, n := range in {
+			// A savepoint per row: subscribeIn can fail AFTER it has written the
+			// source, and without this the half-done row would ride into the
+			// commit with the rest of the batch.
+			if _, err := tx.ExecContext(ctx, `SAVEPOINT sub_row`); err != nil {
+				return err
+			}
+			id, existed, isNew, err := subscribeIn(ctx, tx, s, n, now)
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if _, rerr := tx.ExecContext(ctx, `ROLLBACK TO sub_row`); rerr != nil {
+					return rerr
+				}
+				out[i].Err = err
+			} else {
+				out[i] = SubscribeOutcome{SourceID: id, SourceExisted: existed, New: isNew}
+			}
+			if _, err := tx.ExecContext(ctx, `RELEASE sub_row`); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// subscribeIn is Subscribe's write, inside a transaction somebody else owns, so
+// the one-feed and the many-feed paths cannot disagree about what subscribing
+// does.
+func subscribeIn(ctx context.Context, tx *sql.Tx, s Scope, n NewSubscription, now string) (sourceID string, existed, isNew bool, err error) {
+	naturalKey, feedURL, siteURL, title := n.NaturalKey, n.FeedURL, n.SiteURL, n.Title
+
+	// The folder is checked BEFORE the source is created, so a bad folder id
+	// cannot leave a half-done subscription behind. It is inside the
+	// transaction rather than before it because the folder could otherwise be
+	// deleted between the check and the write.
+	if n.FolderID != "" {
+		if err := checkFolder(ctx, tx, s, n.FolderID); err != nil {
+			return "", false, false, err
+		}
+	}
+	qerr := tx.QueryRowContext(ctx,
+		`SELECT id FROM sources WHERE natural_key = ?`, naturalKey).Scan(&sourceID)
+	switch {
+	case qerr == nil:
+		existed = true
+		// A previously deactivated source coming back is a resubscribe, not a
+		// new row: reactivating preserves every other tenant's history.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sources SET deactivated_at = NULL WHERE id = ?`, sourceID); err != nil {
+			return "", false, false, err
+		}
+	case errors.Is(qerr, sql.ErrNoRows):
+		sourceID = idgen.New()
+		kind := n.Kind
+		if kind == "" {
+			kind = "feed"
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO sources (id,natural_key,feed_url,site_url,title,kind,created_at,next_fetch_at)
+			VALUES (?,?,?,?,?,?,?,?)`,
+			sourceID, naturalKey, feedURL, siteURL, title, kind, now, now); err != nil {
+			return "", false, false, err
+		}
+		// The interval is applied as an override rather than as a column in
+		// the INSERT, so the schema keeps owning what "normal" is. A caller
+		// that says nothing gets the default without this file having to
+		// know what the default is.
+		if n.FetchIntervalS > 0 {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE sources SET fetch_interval_s = ? WHERE id = ?`,
+				n.FetchIntervalS, sourceID); err != nil {
+				return "", false, false, err
+			}
+		}
+	default:
+		return "", false, false, qerr
+	}
+
+	var folder any
+	if n.FolderID != "" {
+		folder = n.FolderID
+	}
+	// DO NOTHING on conflict, so re-adding a feed you already have is not an
+	// error — but a re-add that names a category DOES refile it. Silently
+	// ignoring the category because the subscription happened to exist would
+	// make the form lie about what it just did.
+	ins, err := tx.ExecContext(ctx, `
+		INSERT INTO subscriptions (id,tenant_id,user_id,source_id,folder_id,title,created_at)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(user_id,source_id) DO NOTHING`,
+		idgen.New(), s.TenantID, s.UserID, sourceID, folder, title, now)
+	if err != nil {
+		return "", false, false, err
+	}
+	if affected, aerr := ins.RowsAffected(); aerr == nil {
+		isNew = affected > 0
+	}
+	// Deliver what the source already holds.
+	//
+	// The mirror of ingest's delivery, and the case A14 makes inevitable:
+	// items are global, so subscribing to a feed somebody else already reads
+	// means subscribing to a source that is ALREADY FULL. Ingest will not run
+	// again for those items, so without this the new subscriber's unread
+	// count starts at zero and only counts what arrives from now on.
+	//
+	// DO NOTHING rather than upsert: re-subscribing to a feed you previously
+	// dropped must not wipe what you had read of it.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO user_item_state (tenant_id, user_id, item_id, source_id,
+		                             published_at, rev, updated_at)
+		SELECT ?, ?, i.id, i.source_id, i.published_at, 0, ?
+		  FROM items i
+		 WHERE i.source_id = ? AND i.deactivated_at IS NULL
+		ON CONFLICT(user_id, item_id) DO NOTHING`,
+		s.TenantID, s.UserID, now, sourceID); err != nil {
+		return "", false, false, err
+	}
+
+	if n.FolderID != "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE subscriptions SET folder_id = ?
+			 WHERE user_id = ? AND tenant_id = ? AND source_id = ?`,
+			n.FolderID, s.UserID, s.TenantID, sourceID); err != nil {
+			return "", false, false, err
+		}
+	}
+	return sourceID, existed, isNew, nil
 }
 
 // Unsubscribe removes the subscription. It never touches the source: other
@@ -2140,8 +2222,8 @@ func (r *ReaderRepo) UpdateTag(ctx context.Context, s Scope, tagID string, p Tag
 		// Trimmed, so "   " clears the override rather than storing whitespace
 		// that renders as a nameless row.
 		v := strings.TrimSpace(*p.Label)
-		if len(v) > MaxTagLabel {
-			return Tag{}, fmt.Errorf("store: a tag label must be at most %d characters", MaxTagLabel)
+		if chars(v) > MaxTagLabel {
+			return Tag{}, &TextError{Subject: SubjectTagLabel, Problem: ProblemTooLong, Max: MaxTagLabel}
 		}
 		set = append(set, "label = ?")
 		args = append(args, v)
@@ -2230,8 +2312,11 @@ func (r *ReaderRepo) SetFeedTag(ctx context.Context, s Scope, sourceID, name str
 		return Tag{}, ErrNoScope
 	}
 	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 48 {
-		return Tag{}, fmt.Errorf("store: a tag must be 1-48 characters")
+	switch {
+	case name == "":
+		return Tag{}, &TextError{Subject: SubjectTag, Problem: ProblemEmpty}
+	case chars(name) > MaxTagName:
+		return Tag{}, &TextError{Subject: SubjectTag, Problem: ProblemTooLong, Max: MaxTagName}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
@@ -2325,10 +2410,6 @@ func (r *ReaderRepo) SourcesForTag(ctx context.Context, s Scope, tagID string) (
 	return out, rows.Err()
 }
 
-// MaxNoteBytes bounds one note. 8 KiB is several pages of prose and small
-// enough that the column never becomes a file store.
-const MaxNoteBytes = 8 << 10
-
 // SetNote writes or clears the note on an item.
 //
 // An empty body deletes rather than storing "", so "has a note" stays a simple
@@ -2338,8 +2419,8 @@ func (r *ReaderRepo) SetNote(ctx context.Context, s Scope, itemID, body string) 
 		return ErrNoScope
 	}
 	body = strings.TrimSpace(body)
-	if len(body) > MaxNoteBytes {
-		return fmt.Errorf("store: a note must be under %d bytes", MaxNoteBytes)
+	if chars(body) > MaxNoteChars {
+		return &TextError{Subject: SubjectNote, Problem: ProblemTooLong, Max: MaxNoteChars}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 

@@ -127,6 +127,10 @@ func init() {
 		// three: what this list IS, in four words, and no count.
 		"subNotes":  "Everything you wrote on.",
 		"subUnread": "Unread only. Press u to show everything.",
+		// Every sentence that tells a reader to press a key has a sibling named
+		// <key>Touch, which view.keyHint serves on a screen with no keyboard
+		// (TestKeyHintsHaveTouchVariants holds the pair together).
+		"subUnreadTouch": "Unread only.",
 
 		"searchPlaceholder": "Search",
 		"searchAria":        "Search articles",
@@ -216,20 +220,24 @@ func init() {
 		// An address naming a feed, tag or category the reader does not have. Said
 		// as a place that is not there, with the way out beside it — not as a list
 		// that is empty, which is a statement about their data.
-		"missingTitle":       "Not found",
-		"emptyMissingFeed":   "That feed isn't here",
-		"emptyMissingTag":    "That tag isn't here",
-		"emptyMissingFolder": "That folder isn't here",
-		"emptyMissingHint":   "It may have been removed, or the link may be to a different account.",
-		"emptySearchHint":    "Every feed was searched. Try fewer words, or clear the search box.",
-		"emptyUnread":        "All caught up",
-		"emptyUnreadHint":    "Press u to show everything again.",
-		"emptyLater":         "Nothing saved for later",
-		"emptyLaterHint":     "Press t on an article to put it here.",
-		"emptyLiked":         "Nothing liked yet",
-		"emptyLikedHint":     "Press l on an article, or use ▲ Like.",
-		"emptyDisliked":      "Nothing disliked yet",
-		"emptyDislikedHint":  "Press d on an article you'd rather not have read.",
+		"missingTitle":           "Not found",
+		"emptyMissingFeed":       "That feed isn't here",
+		"emptyMissingTag":        "That tag isn't here",
+		"emptyMissingFolder":     "That folder isn't here",
+		"emptyMissingHint":       "It may have been removed, or the link may be to a different account.",
+		"emptySearchHint":        "Every feed was searched. Try fewer words, or clear the search box.",
+		"emptyUnread":            "All caught up",
+		"emptyUnreadHint":        "Press u to show everything again.",
+		"emptyUnreadHintTouch":   "Everything you have already read is still in All articles.",
+		"emptyLater":             "Nothing saved for later",
+		"emptyLaterHint":         "Press t on an article to put it here.",
+		"emptyLaterHintTouch":    "Use Read later on an article to put it here.",
+		"emptyLiked":             "Nothing liked yet",
+		"emptyLikedHint":         "Press l on an article, or use ▲ Like.",
+		"emptyLikedHintTouch":    "Use ▲ Like on an article to put it here.",
+		"emptyDisliked":          "Nothing disliked yet",
+		"emptyDislikedHint":      "Press d on an article you'd rather not have read.",
+		"emptyDislikedHintTouch": "Use Dislike on an article you'd rather not read again.",
 		// The list did not arrive, which is not the same as being empty. Every
 		// other pair in this block explains the reader's own data back to them,
 		// and all of them are wrong here — see emptyList's first case.
@@ -338,9 +346,10 @@ func init() {
 		"revisionsEmpty": "The earlier version was not kept — this article changed before we started recording versions.",
 		"revisionsError": "Could not load the earlier version.",
 
-		"pickTitle":  "Pick something to read",
-		"pickHint":   "j and k move through the list, o opens the original.",
-		"backToList": "‹ List",
+		"pickTitle":     "Pick something to read",
+		"pickHint":      "j and k move through the list, o opens the original.",
+		"pickHintTouch": "Tap an article in the list to read it.",
+		"backToList":    "‹ List",
 
 		// The focus toggle. Two labels, because the control is an icon and its
 		// accessible name has to say what pressing it DOES — which is the
@@ -383,8 +392,11 @@ func init() {
 		"translatedUnknown": "Translated.",
 		// Said rather than discovered halfway down the page.
 		"translatedPartial": "The end of this article is in the original language.",
-		"translateFailed":   "Couldn't translate this article: {err}",
-		"translateSame":     "This article is already in your language.",
+		// translateFailed is gone: it wrapped the server's own sentence ("Couldn't
+		// translate this article just now.") in another, and the line read the
+		// same thing twice (G17). The server's refusal is already a sentence
+		// written for this place, so the note shows it as it is.
+		"translateSame": "This article is already in your language.",
 		// The proxy pair. "View page" rather than "Proxy" or "Snapshot": the
 		// reader is choosing what to look at, not which mechanism fetches it,
 		// and the mechanism is explained inside the page itself where it

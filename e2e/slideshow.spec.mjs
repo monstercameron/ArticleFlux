@@ -216,6 +216,40 @@ test.describe('slideshow', () => {
     await expect(page.locator('.pane-list')).toBeVisible();
   });
 
+  // The show is addressed while it runs (…/slideshow) and the address has to go
+  // with it. The writer derives the address from state, so closing the mode is
+  // meant to be enough — but a history write that never reached the browser used
+  // to leave the bar naming a mode that had gone, with nothing to write it again,
+  // and a link copied from there restarted nothing. Both ways out, with the
+  // address polled rather than read once: it follows the overlay by a commit.
+  for (const [how, leave] of [
+    ['escape', (page) => control(page, 'Escape')],
+    ['the Leave button', async (page) => {
+      // A phone's only gesture is the tap control() already makes.
+      if (await isPhone(page)) return control(page, 'Escape');
+      await page.mouse.move(300, 300);
+      await page.mouse.move(320, 340);
+      await expect(slides(page)).toHaveAttribute('data-hud', 'true', { timeout: 10_000 });
+      await page.getByRole('button', { name: 'Leave the slideshow' }).click();
+    }],
+  ]) {
+    test(`leaving the show with ${how} takes /slideshow off the address`, async ({ page }) => {
+      const pathname = () => new URL(page.url()).pathname;
+      await boot(page);
+      await startShow(page);
+      await expect.poll(pathname).toMatch(/\/slideshow$/);
+
+      await leave(page);
+
+      await expect(slides(page)).toHaveCount(0);
+      await expect.poll(pathname, { timeout: 10_000 }).not.toMatch(/\/slideshow$/);
+      // And it stays off: the check that follows a close runs a moment later, and
+      // must not put the segment back.
+      await page.waitForTimeout(1500);
+      expect(pathname()).not.toMatch(/\/slideshow$/);
+    });
+  }
+
   test('while it runs it owns the keyboard', async ({ page }, testInfo) => {
     // The claim is about KEYS reaching the reader underneath, and a phone has
     // no keyboard to send them from; there is no tap that means Ctrl+K.

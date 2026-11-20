@@ -2,6 +2,7 @@ package apierr
 
 import (
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/llm"
@@ -32,7 +33,12 @@ func FromDomain(err error) error {
 		return already
 	}
 
+	var text *store.TextError
 	switch {
+	// What a reader typed was refused, and the refusal knows which limit.
+	case errors.As(err, &text):
+		return fromTextError(text).WithCause(err)
+
 	// A row in another tenant returns ErrNotFound from the repositories, which
 	// is the half of the cross-tenant rule the store implements. This is the
 	// other half: it stays NotFound all the way to the client.
@@ -131,4 +137,42 @@ func FromAuthz(err error, capability string, sameTenant bool) error {
 		return CrossTenant().WithCause(err)
 	}
 	return PermissionDenied(capability).WithCause(err)
+}
+
+// fromTextError turns a refused name or note into a keyed InvalidArgument that
+// names its limit.
+//
+// One key per (subject, problem) rather than one generic "too long" with the
+// subject as an argument, because the sentence differs in more than a noun in
+// the languages the catalog is translated into — and "A tag label can be up to
+// 48 characters" is the message, where "That is too long" is the complaint the
+// audit (G19) made. The limit is the only argument: it is a server constant, and
+// the reader's own text is not sent back to them in a status.
+func fromTextError(e *store.TextError) *Error {
+	max := strconv.Itoa(e.Max)
+	args := map[string]string{"max": max}
+	switch {
+	case e.Subject == store.SubjectFolder && e.Problem == store.ProblemEmpty:
+		return Invalid("name", "srv.folderNameEmpty", "A folder needs a name.")
+	case e.Subject == store.SubjectFolder && e.Problem == store.ProblemTooLong:
+		return Invalid("name", "srv.folderNameTooLong",
+			"A folder name can be up to "+max+" characters.").WithArgs(args)
+	case e.Subject == store.SubjectFolder && e.Problem == store.ProblemTaken:
+		return Invalid("name", "srv.folderNameTaken", "You already have a folder with that name.")
+	case e.Subject == store.SubjectTag && e.Problem == store.ProblemEmpty:
+		return Invalid("name", "srv.tagEmpty", "A tag needs a name.")
+	case e.Subject == store.SubjectTag && e.Problem == store.ProblemTooLong:
+		return Invalid("name", "srv.tagTooLong",
+			"A tag can be up to "+max+" characters.").WithArgs(args)
+	case e.Subject == store.SubjectTagLabel && e.Problem == store.ProblemTooLong:
+		return Invalid("label", "srv.tagLabelTooLong",
+			"A tag label can be up to "+max+" characters.").WithArgs(args)
+	case e.Subject == store.SubjectNote && e.Problem == store.ProblemTooLong:
+		return Invalid("body", "srv.noteTooLong",
+			"A note can be up to "+max+" characters.").WithArgs(args)
+	}
+	// A combination nobody has named yet is a bug in the caller of this function,
+	// and has no catalog key: the safe Internal default beats a key the
+	// client would render as its own identifier.
+	return Internal(e)
 }

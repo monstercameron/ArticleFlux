@@ -154,13 +154,26 @@ func importReport(tr i18n.Runtime, fileName string, r *pb.ImportOpmlResponse) []
 		kitFacts(kitFactsTab, facts...),
 	}
 
+	// "Nothing new" first, and only when nothing else is worth saying: a file
+	// every feed of which was already followed is a success that looks like an
+	// empty report (G12).
 	skips := r.GetSkips()
+	if r.GetSubscribed() == 0 && r.GetAlreadySubscribed() > 0 && len(skips) == 0 {
+		out = append(out, html.Div(html.Props{Class: "set-note"},
+			html.Text(tr.T("data", "nothingNew"))))
+	}
 	if len(skips) == 0 {
 		return append(out, html.Div(html.Props{Class: "set-note"},
 			html.Text(tr.T("data", "noneSkipped"))))
 	}
+	// The exact count, where the list is capped at thirty and a report that says
+	// "30 rows" about a file that lost 300 is understating it.
+	skipped := int(r.GetSkipped())
+	if skipped < len(skips) {
+		skipped = len(skips)
+	}
 	out = append(out, html.Div(html.Props{Class: "set-note"},
-		html.Text(tr.T("data", "skippedIntro", i18n.Count(len(skips))))))
+		html.Text(tr.T("data", "skippedIntro", i18n.Count(skipped)))))
 	for i, s := range skips {
 		name := s.GetTitle()
 		if name == "" {

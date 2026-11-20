@@ -336,3 +336,91 @@ test.describe('appearance', () => {
     await pickTheme(page, 'fanciful');
   });
 });
+
+/**
+ * The two pieces of text that were under the floor in the dark themes (G13): a
+ * category chip (a raw hue on its own tint) and a read row's source name (an
+ * opacity over the ground). client/design/hue_contrast_test.go proves the mixes in
+ * Go for every hue; this reads the same pixels out of the shipping engine, for
+ * the hues in the fixtures' range and all three grounds a row can sit on.
+ */
+const CATEGORY_HUES = [0, 14, 27, 40, 70, 83, 96, 110, 123, 136, 149, 162, 176, 189, 202, 215, 228,
+  242, 255, 268, 281, 294, 308, 321, 334, 347];
+
+async function hueTextRatios(page, sourceHues, categoryHues) {
+  return page.evaluate(({ sourceHues, categoryHues }) => {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 1;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    const paint = (css) => {
+      ctx.clearRect(0, 0, 1, 1);
+      ctx.fillStyle = css;
+      ctx.fillRect(0, 0, 1, 1);
+    };
+    const px = () => { const d = ctx.getImageData(0, 0, 1, 1).data; return [d[0], d[1], d[2]]; };
+    const rgb = (css) => { paint('#000'); paint(css); return px(); };
+    const lum = (c) => {
+      const f = c.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+      return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+    };
+    const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((p, q) => q - p); return (hi + 0.05) / (lo + 0.05); };
+
+    const worst = {};
+    const note = (k, v) => { if (!(k in worst) || v < worst[k]) worst[k] = Math.round(v * 100) / 100; };
+    for (const ground of ['--bg', '--sur', '--sur-2']) {
+      const probe = document.createElement('div');
+      probe.style.background = `var(${ground})`;
+      document.body.appendChild(probe);
+      const g = getComputedStyle(probe).backgroundColor;
+      const ground3 = rgb(g);
+      for (const hue of sourceHues) {
+        const row = document.createElement('div');
+        row.className = 'item-row';
+        row.setAttribute('data-age', 'read');
+        row.style.setProperty('--c', hue);
+        const name = document.createElement('span');
+        name.className = 'item-source';
+        row.appendChild(name);
+        probe.appendChild(row);
+        // Opacity is part of what the reader sees: composite it, as a browser does.
+        const cs = getComputedStyle(name);
+        const op = parseFloat(cs.opacity);
+        const text = rgb(cs.color);
+        const eff = text.map((v, i) => v * op + ground3[i] * (1 - op));
+        note(`${ground} read source name`, ratio(eff, ground3));
+        row.remove();
+      }
+      for (const h of categoryHues) {
+        const chip = document.createElement('span');
+        chip.className = 'cat-chip';
+        chip.style.setProperty('--cat', `oklch(62% 0.15 ${h}deg)`);
+        probe.appendChild(chip);
+        const cs = getComputedStyle(chip);
+        paint(g);
+        // The chip's own fill laid over the ground, then the text against that.
+        // (The hover tint is the Go test's; a pointer cannot be forced from here.)
+        ctx.fillStyle = cs.backgroundColor;
+        ctx.fillRect(0, 0, 1, 1);
+        const fill = px();
+        note(`${ground} category chip`, ratio(rgb(cs.color), fill));
+        chip.remove();
+      }
+      probe.remove();
+    }
+    return worst;
+  }, { sourceHues, categoryHues });
+}
+
+test.describe('hue text in every theme (G13)', () => {
+  test('a category chip and a read row’s source name clear AA on every theme', async ({ page }) => {
+    await boot(page);
+    for (const theme of THEMES) {
+      await pickTheme(page, theme);
+      const worst = await hueTextRatios(page, SOURCE_HUES, CATEGORY_HUES);
+      for (const [what, ratio] of Object.entries(worst)) {
+        expect(ratio, `${theme}: ${what} is ${ratio}:1`).toBeGreaterThanOrEqual(AA);
+      }
+    }
+    await pickTheme(page, 'fanciful');
+  });
+});

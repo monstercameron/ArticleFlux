@@ -64,7 +64,9 @@ func TestTranslateControlThroughItsStates(t *testing.T) {
 		{name: "failed", ok: true,
 			tr:    articleTranslation{state: trFailed, err: "the model is unavailable"},
 			state: trFailed, label: "Translate",
-			note: "translate this article: the model is unavailable"},
+			// The server's own sentence, once and unwrapped (G17): it used to read
+			// "Couldn't translate this article: Couldn't translate this article just now."
+			note: ">the model is unavailable</div>"},
 		{name: "already in this language", ok: true, tr: articleTranslation{state: trSame},
 			note: "This article is already in your language."},
 		// A translation already on hand stays reachable after the owner turns

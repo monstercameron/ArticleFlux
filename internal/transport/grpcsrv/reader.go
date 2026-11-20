@@ -67,7 +67,7 @@ type ReaderServer struct {
 	repo *store.ReaderRepo
 	// recommender enqueues a fresh scoring pass. Nil on an instance that never
 	// wired one, exactly like categorizer — RefreshRecommendations then reports
-	// Unavailable rather than panicking.
+	// Unimplemented rather than panicking.
 	recommender *recommendjob.Service
 }
 
@@ -677,8 +677,20 @@ func pbFolder(f store.Folder) *pb.Folder {
 
 // folderStatus keeps the taxonomy's own errors intact and hands everything else
 // to the standard mapping, so an unowned folder is still NotFound.
-func folderStatus(err error) error {
-	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrNoScope) {
+func folderStatus(err error) error { return callerText(err) }
+
+// callerText is the refusal path for a write whose input is the reader's own
+// text — a folder's name, a tag, a note.
+//
+// A TextError goes through the standard mapping, which gives it a catalog key
+// and the limit it broke (G7, G19: "Something went wrong on the server" and "Couldn't add that tag"
+// both hid a number the reader needed). An unowned row is NotFound, never a
+// permission error. Anything else is still the caller's to fix and keeps its
+// own sentence as InvalidArgument — the cap on how many folders or tags a reader may
+// have is that case, and it has no catalog key yet.
+func callerText(err error) error {
+	var text *store.TextError
+	if errors.As(err, &text) || errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrNoScope) {
 		return toStatus(err)
 	}
 	return status.Error(codes.InvalidArgument, err.Error())
@@ -927,11 +939,8 @@ func (s *ReaderServer) SetFeedTag(ctx context.Context, req *pb.SetFeedTagRequest
 	}
 	t, err := s.svc.SetFeedTag(ctx, sc, req.GetSourceId(), req.GetName(), req.GetOn())
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, toStatus(err)
-		}
 		// A too-long or empty name is the caller's to fix.
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, callerText(err)
 	}
 	return &pb.SetFeedTagResponse{Tag: toPBTag(t)}, nil
 }
@@ -965,12 +974,9 @@ func (s *ReaderServer) UpdateTag(ctx context.Context, req *pb.UpdateTagRequest) 
 	}
 	t, err := s.svc.UpdateTag(ctx, sc, req.GetTagId(), p)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, toStatus(err)
-		}
 		// A label over the limit or a glyph outside the catalogue is the
 		// caller's to fix, not this server's to swallow.
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, callerText(err)
 	}
 	return &pb.UpdateTagResponse{Tag: toPBTag(t)}, nil
 }
@@ -981,10 +987,7 @@ func (s *ReaderServer) SetNote(ctx context.Context, req *pb.SetNoteRequest) (*pb
 		return nil, toStatus(err)
 	}
 	if err := s.svc.SetNote(ctx, sc, req.GetItemId(), req.GetBody()); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, toStatus(err)
-		}
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, callerText(err)
 	}
 	return &pb.SetNoteResponse{}, nil
 }
@@ -1158,6 +1161,14 @@ func (s *ReaderServer) ListRecommendations(ctx context.Context, _ *pb.ListRecomm
 	out := &pb.ListRecommendationsResponse{
 		Recommendations: make([]*pb.Recommendation, 0, len(recs)),
 	}
+	// Whether the last pass could not review some of what it scored (G9). Only
+	// meaningful while the reader still has Smart+ review on — the flag outlives
+	// the switch, and "review is unavailable" beside a review the reader turned
+	// off would be a banner about something they are not using.
+	if prefs, perr := s.repo.GetPrefs(ctx, sc); perr == nil {
+		out.ReviewUnavailable = prefs[recommendjob.SmartPlusPrefKey] == "true" &&
+			prefs[recommendjob.ReviewFailedPrefKey] == "true"
+	}
 	for _, r := range recs {
 		out.Recommendations = append(out.Recommendations, &pb.Recommendation{
 			Domain: r.Domain, FeedUrl: r.FeedURL, Title: r.Title,
@@ -1177,7 +1188,7 @@ func (s *ReaderServer) RefreshRecommendations(ctx context.Context, _ *pb.Refresh
 		return nil, toStatus(err)
 	}
 	if s.recommender == nil {
-		return nil, status.Error(codes.Unavailable, "recommendations are not enabled on this instance")
+		return nil, status.Error(codes.Unimplemented, "recommendations are not enabled on this instance")
 	}
 	if err := s.recommender.Enqueue(ctx, sc); err != nil {
 		return nil, toStatus(err)
@@ -1194,7 +1205,7 @@ func (s *ReaderServer) AcceptRecommendation(ctx context.Context, req *pb.AcceptR
 		return nil, toStatus(err)
 	}
 	if s.repo == nil {
-		return nil, status.Error(codes.Unavailable, "recommendations are not enabled on this instance")
+		return nil, status.Error(codes.Unimplemented, "recommendations are not enabled on this instance")
 	}
 	domain := req.GetDomain()
 	if domain == "" {
@@ -1232,7 +1243,7 @@ func (s *ReaderServer) RejectRecommendation(ctx context.Context, req *pb.RejectR
 		return nil, toStatus(err)
 	}
 	if s.repo == nil {
-		return nil, status.Error(codes.Unavailable, "recommendations are not enabled on this instance")
+		return nil, status.Error(codes.Unimplemented, "recommendations are not enabled on this instance")
 	}
 	domain := req.GetDomain()
 	if domain == "" {

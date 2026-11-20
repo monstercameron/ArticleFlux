@@ -150,6 +150,11 @@ type kitRowProps struct {
 
 	// Class is the row's class: "feed-row", "feed-row topic-row", "pal-row", "tab".
 	Class string
+	// NoTab takes the row out of the Tab order (tabindex -1) while leaving it
+	// focusable by script and by the arrows. The sidebar uses it for every row:
+	// Tab visits the pane ONCE, at the one control platform.RovingSync gives
+	// tabindex 0, and the arrows do the rest (G10).
+	NoTab bool
 	// Static draws a div with no aria-current — a line that reports rather than
 	// navigates (the Activity log). Otherwise the row is a button.
 	Static bool
@@ -256,6 +261,9 @@ func kitRow(p kitRowProps) ui.Node {
 		Class: p.Class, ID: p.ID, Role: p.Role, Title: p.Title,
 		DataAttr: p.Hook, DataAttrs: p.Hooks, Data: p.Data, Raw: p.Raw,
 		Aria: kitRowAria(p),
+	}
+	if p.NoTab {
+		props.TabIndex = -1
 	}
 	if p.Slot == "" {
 		props.Key = p.Key

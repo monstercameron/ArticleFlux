@@ -702,16 +702,27 @@ func (s *Service) PollDue(ctx context.Context, limit int) (RefreshResult, error)
 // and looks like a hang, so import subscribes and lets the poller catch up —
 // giving a usable sidebar in under a second.
 func (s *Service) SubscribeOnly(ctx context.Context, sc store.Scope, rawURL, title, siteURL, folderID string) (store.Feed, bool, error) {
+	sub, err := newSubscription(rawURL, title, siteURL, folderID)
+	if err != nil {
+		return store.Feed{}, false, err
+	}
+	return s.repo.Subscribe(ctx, sc, sub)
+}
+
+// newSubscription validates an address and builds the row to store, shared by
+// SubscribeOnly and the batched import so the two cannot disagree about what a
+// subscribable URL is.
+func newSubscription(rawURL, title, siteURL, folderID string) (store.NewSubscription, error) {
 	if rawURL == "" {
-		return store.Feed{}, false, errors.New("reader: no url")
+		return store.NewSubscription{}, errors.New("reader: no url")
 	}
 	if urlnorm.Host(rawURL) == "" {
-		return store.Feed{}, false, fmt.Errorf("reader: %q is not a URL", rawURL)
+		return store.NewSubscription{}, fmt.Errorf("reader: %q is not a URL", rawURL)
 	}
-	return s.repo.Subscribe(ctx, sc, store.NewSubscription{
+	return store.NewSubscription{
 		NaturalKey: feed.NaturalKey(rawURL), FeedURL: rawURL, SiteURL: siteURL,
 		Title: title, FolderID: folderID,
-	})
+	}, nil
 }
 
 // Following reports which of these feed addresses the reader already subscribes

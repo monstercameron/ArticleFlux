@@ -520,6 +520,13 @@ func unescape(s string) string {
 	return s
 }
 
+// namesSlideshow reports whether an address ends in the slideshow segment — the
+// one fact the closing check needs, without parsing a whole route for it.
+func namesSlideshow(base, path string) bool {
+	segs := pathSegments(base, path)
+	return len(segs) > 0 && dialog(segs[len(segs)-1]) == dialogShow
+}
+
 // samePlace reports whether two routes describe the same PLACE, which is the
 // whole push-versus-replace decision (see platform.PushPath).
 //
@@ -649,20 +656,23 @@ func knownRouteHead(seg string) bool {
 	return false
 }
 
+// loadedLists is which of the reader's lists have arrived at least once.
+type loadedLists struct{ feeds, tags, folders bool }
+
 // scopeMissing reports whether a scope names a feed, tag or category the reader
 // does not have: an address from a link that outlived what it pointed at, a typo,
 // or an id from somebody else's account.
 //
 // Judged against what the rail holds, so it can only be asked once that has
-// arrived. A tag or category is judged only when the reader HAS some: an empty
-// list is also what a list that has not landed yet looks like, and calling every
-// tag missing for a round trip would be the same wrong answer in the other
-// direction. The cost is that an unknown tag on an account with no tags at all
-// reads as a tag with nothing in it, which is true enough.
-func scopeMissing(sc scope, feedsKnown bool, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Folder) bool {
+// arrived — for each kind separately (loadedLists), because an empty list is
+// also what a list that has not landed yet looks like, and calling every tag
+// missing for a round trip would be the wrong answer in the other direction.
+// Knowing it has landed is what lets an account with no tags or folders at all
+// say "that tag isn't here" for /tag/zzz instead of an empty stream.
+func scopeMissing(sc scope, loaded loadedLists, feeds []*pb.Feed, tags []*pb.Tag, folders []*pb.Folder) bool {
 	switch {
 	case sc.SourceID != "":
-		if !feedsKnown {
+		if !loaded.feeds {
 			return false
 		}
 		for _, f := range feeds {
@@ -672,7 +682,7 @@ func scopeMissing(sc scope, feedsKnown bool, feeds []*pb.Feed, tags []*pb.Tag, f
 		}
 		return true
 	case sc.TagID != "":
-		if len(tags) == 0 {
+		if !loaded.tags {
 			return false
 		}
 		for _, t := range tags {
@@ -682,7 +692,7 @@ func scopeMissing(sc scope, feedsKnown bool, feeds []*pb.Feed, tags []*pb.Tag, f
 		}
 		return true
 	case sc.FolderID != "":
-		if len(folders) == 0 {
+		if !loaded.folders {
 			return false
 		}
 		for _, f := range folders {

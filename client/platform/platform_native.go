@@ -256,3 +256,8 @@ func RememberFocus(name string) {}
 func RestoreFocus(name string) {}
 
 func CoarsePointer() bool { return false }
+
+// The roving-tabindex helpers (roving_wasm.go): no DOM to keep a stop in.
+func RovingSync(containerSelector, itemSelector, currentSel, fallbackSel string) {}
+
+func RailMove(containerSelector, primarySel, groupSel string, dy, dx int) bool { return false }

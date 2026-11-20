@@ -67,7 +67,7 @@ func init() {
 		"articlesAll":      "Everything",
 		"articlesUnread":   "Unread only",
 		"railLabel":        "Feeds in the sidebar",
-		"railHint":         "At 150 subscriptions most of them did not publish today.",
+		"railHint":         "On a long list, most feeds did not publish today.",
 		"railAll":          "All feeds",
 		"railUnread":       "With unread",
 		"readGroup":        "What counts as read",

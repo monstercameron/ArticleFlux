@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/monstercameron/ArticleFlux/internal/recommend"
@@ -134,6 +135,15 @@ func New(
 	return &Service{repo: repo, val: val, rel: rel, ws: ws, topic: topicOf, examples: examplesOf, log: log}
 }
 
+// ReviewFailedPrefKey records, per reader, that the last pass could not review
+// some candidates, so Discover can say its suggestions are unreviewed instead of
+// letting them pass as reviewed. "true" or "false"; written only by this job.
+//
+// A preference and not a column: it is one bit about the last run that the
+// screen reads next to the rows, it is replaced every run, and the cost of a
+// reader overwriting it from the client is a banner they asked for.
+const ReviewFailedPrefKey = "discover.reviewFailed"
+
 // SmartPlusPrefKey is the per-user opt-in for the relevance gate — its own
 // key, not derive.SmartPlusPrefKey, for the reason derive.go documents at
 // length for its own third key: this egresses a DIFFERENT thing (a
@@ -220,6 +230,11 @@ type Result struct {
 	// did not have two sample posts to review.
 	Reviewed     int
 	FailedReview int
+	// ReviewErrors counts reviews that could not RUN — a rejected key, an open
+	// circuit, a provider outage. Not FailedReview, which is a review that ran
+	// and said no. Each of these candidates was scored on rungs 1-3's evidence
+	// alone and may still be shown, so the reader has to be told (G9).
+	ReviewErrors int
 	// WebSearched counts candidate domains rung 5 (web search) found and
 	// validated this run — zero on an instance with Smart+ off, when the
 	// reader hasn't opted in, or when rungs 1-2 already found enough that
@@ -257,6 +272,7 @@ func (s *Service) applyRelevanceGate(
 		// the candidate already has, which is the existing, already-safe
 		// behaviour — it does not fail the whole run over one candidate's
 		// LLM call.
+		res.ReviewErrors++
 		if s.log != nil {
 			s.log.WarnContext(ctx, "recommendjob: relevance check failed", "domain", domain, "error", err)
 		}
@@ -493,6 +509,15 @@ func (s *Service) Run(ctx context.Context, sc store.Scope, now time.Time) (Resul
 	if err := s.repo.ReplaceRecommendations(ctx, sc, rows); err != nil {
 		return res, err
 	}
+	// Said where the reader will look, in the same breath as the rows it is
+	// about. Written every run, including with "false": a provider that has
+	// recovered must clear it, and a run with review off never set it. Its own
+	// failure is logged and never fails the run — the suggestions are stored,
+	// and a missing banner is the lesser harm.
+	failed := strconv.FormatBool(rel != nil && res.ReviewErrors > 0)
+	if err := s.repo.SetPrefs(ctx, sc, store.Prefs{ReviewFailedPrefKey: failed}); err != nil && s.log != nil {
+		s.log.WarnContext(ctx, "recommendjob: could not record the review state", "error", err)
+	}
 
 	if s.log != nil {
 		// web_search says which of three things happened, because "candidates=0"
@@ -505,7 +530,7 @@ func (s *Service) Run(ctx context.Context, sc store.Scope, now time.Time) (Resul
 			"user", sc.UserID, "candidates", res.Candidates,
 			"validated", res.Validated, "recommended", res.Recommended,
 			"rejected", res.Rejected, "reviewed", res.Reviewed,
-			"failed_review", res.FailedReview,
+			"failed_review", res.FailedReview, "review_errors", res.ReviewErrors,
 			"web_search", webSearchStatus(ws, topic, res),
 			"web_searched", res.WebSearched,
 			"dismissed_domains", len(dismissed))

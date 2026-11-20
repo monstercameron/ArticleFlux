@@ -343,18 +343,20 @@ func (s *SmartServer) themeErr(err error, what string) error {
 	case errors.Is(err, llm.ErrTruncated):
 		return errKey(codes.ResourceExhausted, "srv.themeTruncated",
 			"The palette was cut off before it finished. Try again.", nil)
+	case errors.Is(err, llm.ErrCircuitOpen):
+		return smartPaused()
 	case errors.Is(err, design.ErrNotAPalette):
 		// The model answered, and what it answered was not a palette. Named
 		// separately from a provider failure because the remedy is different:
 		// pressing the button again genuinely helps, where it would not if the key
 		// were wrong.
-		return errKey(codes.Unavailable, "srv.themeNotAPalette",
+		return errKey(providerFailed, "srv.themeNotAPalette",
 			"That came back as something other than a palette. Try again.", nil)
 	}
 	if s.log != nil {
 		s.log.Error("theme generation failed", "what", what, "err", err)
 	}
-	return errKey(codes.Unavailable, "srv.themeFailed",
+	return errKey(providerFailed, "srv.themeFailed",
 		"Couldn't make a theme just now.", nil)
 }
 

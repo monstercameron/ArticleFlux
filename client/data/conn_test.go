@@ -12,6 +12,8 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
 // TestClassify walks §20.7's error taxonomy from the client's end.
@@ -242,4 +244,30 @@ func TestRecoveryGate(t *testing.T) {
 			t.Error("the first connection asked for a recovery refetch")
 		}
 	})
+}
+
+// TestClassifyAnUnavailableFromTheProviderIsNotTheTransport pins G2 of the
+// second UX audit from the client's end: a Smart+ refusal the server built
+// (it has an ErrorDetail with a provider key) was read as "the connection
+// dropped" because of its code alone. A bare Unavailable, or one with some
+// other key, still is.
+func TestClassifyAnUnavailableFromTheProviderIsNotTheTransport(t *testing.T) {
+	with := func(key string) error {
+		st, err := status.New(codes.Unavailable, "x").WithDetails(&pb.ErrorDetail{Key: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Err()
+	}
+	for key, want := range map[string]Class{
+		"srv.smartUnavailable":       ClassApplication,
+		"srv.articleTranslateFailed": ClassApplication,
+		"srv.translateFailed":        ClassApplication,
+		"srv.themeFailed":            ClassApplication,
+		"srv.somethingElse":          ClassTransport,
+	} {
+		if got := Classify(with(key)).Class; got != want {
+			t.Errorf("Classify(Unavailable + %s) = %v, want %v", key, got, want)
+		}
+	}
 }

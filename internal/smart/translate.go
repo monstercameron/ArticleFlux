@@ -99,6 +99,13 @@ type Translator struct {
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
 	fills map[string]bool
+	// failed is the locales whose LAST background fill stopped on an error. A
+	// fill nobody waits on used to report its failure to the log alone, so the
+	// picker sat on "0 of 1,519 translated" with no word that it had stopped —
+	// the client could only tell "finished" from "still going", and a rejected
+	// key is neither (G18). In memory, like fills: it describes the process's
+	// own last attempt, and a restart is a fresh attempt.
+	failed map[string]bool
 
 	// eng is the translation engine; nil means opsEngine over llm.
 	eng translationEngine
@@ -111,7 +118,7 @@ type Translator struct {
 func NewTranslator(client llmClient, settings *store.SettingsRepo) *Translator {
 	return &Translator{llm: client, settings: settings,
 		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		locks: map[string]*sync.Mutex{}, fills: map[string]bool{}}
+		locks: map[string]*sync.Mutex{}, fills: map[string]bool{}, failed: map[string]bool{}}
 }
 
 // WithLog gives the background fill somewhere to report a failure. Nothing
@@ -589,6 +596,7 @@ func (t *Translator) StartFill(ctx context.Context, locale string) (bool, error)
 		return false, nil
 	}
 	t.fills[lang.Code] = true
+	delete(t.failed, lang.Code)
 	t.mu.Unlock()
 
 	go func() {
@@ -608,9 +616,26 @@ func (t *Translator) StartFill(ctx context.Context, locale string) (bool, error)
 		}
 		if err := t.fill(bg, lang, &st); err != nil {
 			t.log.Warn("background ui translation stopped", "locale", lang.Code, "err", err)
+			t.mu.Lock()
+			t.failed[lang.Code] = true
+			t.mu.Unlock()
 		}
 	}()
 	return true, nil
+}
+
+// FillFailed reports whether the last background fill for a locale stopped on an
+// error and has not been started again since. The reason is deliberately not
+// here: the provider's text can quote the request (§22.11), and it is in the
+// log.
+func (t *Translator) FillFailed(locale string) bool {
+	lang, ok := LanguageByCode(locale)
+	if !ok {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.failed[lang.Code]
 }
 
 // Filling reports whether a background fill is running for a locale.

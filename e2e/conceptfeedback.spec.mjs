@@ -47,9 +47,19 @@ test.describe('concept feedback', () => {
 
     const article = currentArticle(page);
     await expect(article).toBeVisible();
-    await article.locator('[data-action="like"]').first().click();
-    await expect(article.locator('[data-action="like"]').first()).toHaveAttribute(
-      'aria-pressed', 'true');
+    // Pressed until it takes, for the reason the starring test in reader.spec
+    // gives: the row click above starts a trip to the article, and a Like that
+    // lands DURING the trip is dropped on purpose — the pane is moving under the
+    // pointer and a verdict on whichever article happened to be passing is a
+    // worse outcome than a press that has to be repeated. A reader waits for the
+    // page to stop; this pressed once, 150ms in, and then waited twenty seconds
+    // for a press the app had declined. By the id, not "the current article":
+    // which article is current is the very thing still settling.
+    const liked = page.locator(`[data-action="like"][data-for-item="${await firstOfCluster.getAttribute('data-item-id')}"]`).first();
+    await expect(async () => {
+      if (await liked.getAttribute('aria-pressed') !== 'true') await liked.click();
+      await expect(liked).toHaveAttribute('aria-pressed', 'true', { timeout: 1500 });
+    }).toPass({ timeout: 30_000 });
 
     const derive = await page.request.post(`${baseURL}/debug/derive-now`);
     expect(derive.ok(), await derive.text()).toBeTruthy();

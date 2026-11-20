@@ -36,8 +36,12 @@ import (
 // max-width would have to animate from `none`.
 func focusCSS(r func(string, string) css.Rule) {
 	// The gutter that centres a reading column in whatever width is left over,
-	// never narrower than the 60px the article already had.
-	const centred = "max(60px, calc((100% - 82ch) / 2))"
+	// never narrower than the 60px the article already had. Measured against the
+	// column itself (--col, see sheet.go) rather than a ch count of whichever
+	// element the padding sits on: the nav, the seam and the article are set in
+	// different faces, and three different guesses at the same width put their
+	// edges in three different places.
+	const centred = "max(60px, calc((100% - var(--col)) / 2))"
 
 	css.Global(".panes", r("transition", "grid-template-columns "+slow))
 
@@ -74,11 +78,11 @@ func focusCSS(r func(string, string) css.Rule) {
 	// column arrives centred with its own furniture still hugging the left.
 	css.Global(".article, .article-nav, .stream-edge",
 		r("transition", "padding "+slow))
-	css.Global(".article-note", r("transition", "margin "+slow))
 	css.Global(".shell[data-focus='true'] .article", r("padding-inline", centred))
 	css.Global(".shell[data-focus='true'] .article-nav", r("padding-inline", centred))
 	css.Global(".shell[data-focus='true'] .stream-edge", r("padding-inline", centred))
-	css.Global(".shell[data-focus='true'] .article-note", r("margin-inline", centred))
+	// The note needs no gutter of its own: it is a child of .article, and
+	// follows the column's edges wherever the article's padding puts them.
 
 	// The source wash comes down.
 	//

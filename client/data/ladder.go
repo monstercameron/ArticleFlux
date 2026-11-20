@@ -117,3 +117,15 @@ func CategoryChooser(it *pb.Item) string {
 	}
 	return CategoryByModel
 }
+
+// ModelRequest is a model save on the wire: the model and nothing else, so it
+// cannot touch the key or a consent. An empty model sets ResetModel and sends no
+// name — the server reads an empty `model` as "leave it alone" (a key-only save
+// sends one), so putting the model back to the default is its own flag (G8).
+func ModelRequest(model string) *pb.SetSmartConfigRequest {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return &pb.SetSmartConfigRequest{ResetModel: true}
+	}
+	return &pb.SetSmartConfigRequest{Model: model}
+}

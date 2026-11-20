@@ -17,7 +17,7 @@ func init() {
 		// they are trying to do, and the hint is where the format gets named.
 		"inGroup": "Bring your feeds in",
 		"inGroupHint": "Most readers export your subscriptions as an OPML file — " +
-			"look for Import/Export in their settings. Folders come across as categories.",
+			"look for Import/Export in their settings. Folders come across as folders.",
 		"importLabel": "Subscription list",
 		"importHint":  "An .opml or .xml file exported from FreshRSS, Feedly, Inoreader, NewsBlur, or anything else that speaks OPML.",
 		"importPick":  "Choose a file…",
@@ -37,8 +37,16 @@ func init() {
 		"factFolders":    "Folders",
 		// A14: one source, polled once, however many people here read it. Worth
 		// saying, because "151 new feeds" sounds like 151 new requests.
-		"factShared":  "Already on this server",
-		"noneSkipped": "Every row in the file became a subscription.",
+		"factShared": "Already on this server",
+		// Not "every row became a subscription": on a repeat import none did, and
+		// the report said so beside this line (G12).
+		"noneSkipped": "No rows were skipped.",
+		// A repeat, or a file whose every feed was followed already. Said as a
+		// sentence because a column of zeros reads as a failure.
+		"nothingNew": "Nothing new — every feed in this file was already in your list.",
+		// A big file is imported a chunk at a time (G1). {done} and {total} are
+		// numbers of rows, already formatted for the reader's locale.
+		"importProgress": "Importing… {done} of {total}",
 
 		// --- taking them out
 		"outGroup":     "Take them with you",
@@ -63,8 +71,12 @@ func init() {
 		// refusal both end the same way: nothing was imported, and the reader
 		// picks a different file. {err} carries the specific.
 		"importFailed": "Nothing was imported — {err}",
-		"exportFailed": "Couldn't export just now — {err}",
-		"readFailed":   "That file could not be read.",
+		// Part of a big file made it in before a call failed. The report beside
+		// this is what DID arrive; this says how far the file got and why it
+		// stopped, so the reader can run it again (a repeat skips what is in).
+		"importStopped": "Stopped at {done} of {total} rows — {err}. What arrived is below; importing the file again picks up the rest.",
+		"exportFailed":  "Couldn't export just now — {err}",
+		"readFailed":    "That file could not be read.",
 	})
 
 	plural(DefaultLocale, "data", "skippedIntro", map[PluralCategory]string{

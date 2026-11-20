@@ -105,3 +105,19 @@ func TestCategoryChooser(t *testing.T) {
 		}
 	}
 }
+
+func TestModelRequestResetsOnlyWhenBlank(t *testing.T) {
+	if req := ModelRequest("  gpt-x "); req.GetModel() != "gpt-x" || req.GetResetModel() {
+		t.Errorf("a named model: %v", req)
+	}
+	for _, blank := range []string{"", "   "} {
+		req := ModelRequest(blank)
+		if !req.GetResetModel() || req.GetModel() != "" {
+			t.Errorf("blank %q: %v", blank, req)
+		}
+		if req.GetOpenaiApiKey() != "" || req.GetClearApiKey() || req.ClassifyEnabled != nil ||
+			req.TranslateArticlesEnabled != nil || req.BudgetUsd != nil {
+			t.Errorf("a model save carried other fields: %v", req)
+		}
+	}
+}

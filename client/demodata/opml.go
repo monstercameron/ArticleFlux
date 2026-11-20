@@ -67,7 +67,22 @@ func (s *readerService) ImportOpml(_ context.Context, req *pb.ImportOpmlRequest)
 		return nil, status.Error(codes.Internal, "that file could not be read")
 	}
 
-	res := &pb.ImportOpmlResponse{Title: doc.Title}
+	// The rows this call takes, as the server's range does (reader.ImportOPMLRange):
+	// the client walks a file in chunks and reports "n of m", and a demo that
+	// answered the whole file whatever it was asked would never exercise that.
+	start, end := int(req.GetStart()), len(doc.Feeds)
+	if start < 0 {
+		start = 0
+	}
+	if start > end {
+		start = end
+	}
+	if m := int(req.GetMaxRows()); m > 0 && start+m < end {
+		end = start + m
+	}
+	res := &pb.ImportOpmlResponse{
+		Title: doc.Title, Total: int32(len(doc.Feeds)), Next: int32(end),
+	}
 
 	// Folders first, so a feed's row can be attached to one in the same pass.
 	// Counted only when created: an import re-run into the categories it made
@@ -82,10 +97,13 @@ func (s *readerService) ImportOpml(_ context.Context, req *pb.ImportOpmlRequest)
 		fo := &folder{id: in.nextID("fold"), name: name, position: int32(len(in.folders))}
 		in.folders = append(in.folders, fo)
 		folderIDs[name] = fo.id
-		res.Folders++
+		// Reported by the first range only, so the walk's sum is the file's.
+		if start == 0 {
+			res.Folders++
+		}
 	}
 
-	for _, f := range doc.Feeds {
+	for _, f := range doc.Feeds[start:end] {
 		url := strings.TrimSpace(f.FeedURL)
 		// The server validates an address by FETCHING it, which is the one thing
 		// this instance cannot do — so it applies the half of the check that
@@ -98,11 +116,13 @@ func (s *readerService) ImportOpml(_ context.Context, req *pb.ImportOpmlRequest)
 			})
 			continue
 		}
-		res.Subscribed++
+		// Subscribed is what this import CREATED; a row already followed is
+		// AlreadySubscribed and not both (G12).
 		if existing := in.feedByURL(url); existing != nil {
 			res.AlreadySubscribed++
 			continue
 		}
+		res.Subscribed++
 		nf := in.addFeed(url, f.Title, folderIDs[f.Folder], "feed")
 		// addFeed fabricates host/feed.xml, which is right for Subscribe — the
 		// reader types a SITE there and the demo cannot go and discover the feed
@@ -121,6 +141,7 @@ func (s *readerService) ImportOpml(_ context.Context, req *pb.ImportOpmlRequest)
 	// shared stays zero, and that is a fact about this deployment rather than a
 	// gap: A14's shared sources exist so two tenants polling the same feed poll
 	// it once, and a demo instance has exactly one reader.
+	res.Skipped = int32(len(res.Skips))
 	in.logf("INFO", "imported a subscription list",
 		"feeds", strconv.Itoa(int(res.Subscribed)),
 		"skipped", strconv.Itoa(len(res.Skips)))

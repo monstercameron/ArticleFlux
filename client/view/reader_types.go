@@ -78,6 +78,10 @@ const (
 	noteSyncSaving  = "saving"
 	noteSyncSaved   = "saved"
 	noteSyncFailed  = "failed"
+	// noteSyncQueued is a save the connection could not carry: kept on this device
+	// and replayed on recovery (data.ErrQueued). Not "pending", which means the
+	// debounce is still counting, and not "failed", which means the server said no.
+	noteSyncQueued = "queued"
 )
 
 // scope is what the item list is showing.
@@ -216,10 +220,13 @@ type actions struct {
 	closeCategory         func()
 	saveCategory          func()
 	deleteCategory        func()
-	setFeedFolder         func(sourceID, folderID string)
-	itemByID              func(string) *pb.Item
-	feedByID              func(string) *pb.Feed
-	search                func(string)
+	// categoryArmed says the folder editor's delete is waiting on its confirming
+	// press, which Escape in the name field answers "no" before it closes anything.
+	categoryArmed func() bool
+	setFeedFolder func(sourceID, folderID string)
+	itemByID      func(string) *pb.Item
+	feedByID      func(string) *pb.Feed
+	search        func(string)
 
 	// Article-scoped actions carry the id of the article they act on. The
 	// reading pane is a stream, so "the article" is ambiguous in the markup and
@@ -237,10 +244,16 @@ type actions struct {
 	markUnread     func(id string)
 	openExtern     func(id string)
 	saveNote       func(id string)
-	addTag         func(id string)
-	removeTag      func(id, name string)
-	editNote       func(id, body string)
-	editTag        func(sourceID, name string)
+	// settleNotes ticks the notes whose queued save the drained outbox delivered.
+	settleNotes func()
+	// noteTyped records a keystroke's text synchronously, and flushNotes hands
+	// whatever is unsaved to the outbox when the tab is going away.
+	noteTyped  func(id, body string)
+	flushNotes func()
+	addTag     func(id string)
+	removeTag  func(id, name string)
+	editNote   func(id, body string)
+	editTag    func(sourceID, name string)
 
 	listen      func(id string)
 	listenPause func()

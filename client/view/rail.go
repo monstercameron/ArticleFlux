@@ -17,6 +17,7 @@ import (
 
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
+	"github.com/monstercameron/ArticleFlux/client/platform"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
@@ -207,6 +208,17 @@ func railPane(p railProps) ui.Node {
 	// one compares unequal on every render, which would defeat the memo
 	// bailout this pane depends on.
 	tr := i18n.UseI18n()
+	// The sidebar is ONE Tab stop, not one per control (G10, FEATURES §5): every
+	// row, gear, caret and band button is tabindex -1 in the markup, and this gives
+	// tabindex 0 to the current row (or the first) after every render, so Tab
+	// visits the pane once and the arrows move inside it — Up and Down between
+	// rows, Left and Right between a row and its own gear or caret
+	// (reader_keyboard.go). The foot (Add a feed, fold) and the filter box stay
+	// ordinary stops: they are the pane's own few controls, not a list.
+	ui.UseEffect(func() func() {
+		platform.RovingSync(".pane-rail", railRovingItems, ".feed-row[aria-current='true']", ".feed-row")
+		return nil
+	})
 	head := []ui.Node{
 		railMasthead(tr, p),
 		// The "Streams" heading is back, and it earns its 22px now that it is
@@ -432,12 +444,31 @@ func railFeedShown(p railProps, f *pb.Feed, needle string) bool {
 // any, and that asymmetry is intended rather than an oversight: a tag is
 // applied to an article from the article, so its band needs to carry no
 // bootstrap of its own.
+//
+// # The one exception: nothing to file
+//
+// On an instance with no feeds, no folders and nothing unread the band is
+// twenty-six topic rows, every one of them empty, stacked above an empty reader
+// — the first screen a new reader sees, and it reads as a list of things that
+// are broken rather than things that are waiting. A topic is a property of an
+// ARTICLE and a folder a set of FEEDS, so with neither there is nothing for
+// either to hold, and the way to the first of them is Add a feed, which is
+// already on screen and offers a new folder inline. The unconditional-band
+// argument above is about the ＋ being the only way in from the rail; here the
+// dialog that the empty reader points at is a way in too, and it is the step
+// that has to come first. The moment a feed, a folder or an unread article
+// exists the band is back, in full — a stated decision about a reader with
+// articles (docs/FEATURES.md, Categories) is untouched.
 func railCategories(tr i18n.Runtime, p railProps) []ui.Node {
+	if len(p.feeds) == 0 && len(p.folders) == 0 && p.total == 0 {
+		return nil
+	}
 	// The ＋ sits on the band rather than at the foot of the list: it is the
 	// same kind of control as the unread/all switch on the Feeds band, and a
 	// section's own actions belong on its heading.
 	newCat := html.Button(html.Props{
 		Class:    "rail-band-act",
+		TabIndex: -1,
 		DataAttr: html.DataAttribute{Name: "action", Value: actCatNew},
 		Aria:     map[string]string{"label": tr.T("rail", "addCategoryA")},
 	}, html.Text(tr.T("rail", "addCategory")))
@@ -544,6 +575,7 @@ func uncategorisedRow(tr i18n.Runtime, active bool, unread int) ui.Node {
 		label = tr.T("rail", "categoryUnreadAria", i18n.CountWith(unread, i18n.Args{"name": name}))
 	}
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row topic-row",
 		Hook:    html.DataAttribute{Name: "category-none", Value: "1"},
 		Current: active, Label: label,
@@ -570,6 +602,7 @@ func topicRow(tr i18n.Runtime, slug string, active bool, unread int) ui.Node {
 		label = tr.T("rail", "categoryUnreadAria", i18n.CountWith(unread, i18n.Args{"name": name}))
 	}
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row topic-row",
 		Hook:    html.DataAttribute{Name: "category-slug", Value: slug},
 		Current: active, Label: label,
@@ -606,20 +639,26 @@ func categoryRows(tr i18n.Runtime, p railProps, id, name string, feeds []*pb.Fee
 	if editable {
 		gear = html.Button(html.Props{
 			Class:     "feed-gear cat-gear",
+			TabIndex:  -1,
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: actCatOpen}, {Name: "value", Value: id}},
 			Title:     tr.T("rail", "editCategory", i18n.Args{"name": name}),
 			Aria:      map[string]string{"label": tr.T("rail", "editCategory", i18n.Args{"name": name})},
 		}, html.Text("✎"))
 	}
 	out := []ui.Node{kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row cat-row",
 		Hook:    html.DataAttribute{Name: "folder-id", Value: id},
 		Current: p.sel.FolderID == id,
 		Label:   tr.T("rail", "categoryAria", i18n.CountWith(len(feeds), i18n.Args{"name": name})),
 		Name:    name,
-		Count:   kitCount(tr, unread),
-		Gap:     true,
-		Slot:    "feed-slot cat-slot", Key: "cat-" + id,
+		// The rail ellipsises a folder name at about twenty characters while the
+		// name itself may run to 48 (G25), so the whole of it has to be somewhere:
+		// the tooltip, as a feed's is.
+		NameTitle: name,
+		Count:     kitCount(tr, unread),
+		Gap:       true,
+		Slot:      "feed-slot cat-slot", Key: "cat-" + id,
 		SlotData: map[string]string{"open": strconv.FormatBool(open)},
 		// The caret is its own button, beside the row rather than inside it: a
 		// button within a button is invalid, and the browser's repair puts the
@@ -628,6 +667,7 @@ func categoryRows(tr i18n.Runtime, p railProps, id, name string, feeds []*pb.Fee
 		// and one of them must not be a side effect of the other.
 		Before: html.Button(html.Props{
 			Class:     "cat-caret",
+			TabIndex:  -1,
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: actCatToggle}, {Name: "value", Value: id}},
 			Aria:      kitDisclosureAria(tr.T("rail", "showCategory", i18n.Args{"name": name}), open, kitFoldID(key)),
 		}, html.Text(glyphClosed)),
@@ -811,6 +851,7 @@ func tagRow(tr i18n.Runtime, t *pb.Tag, active bool) ui.Node {
 	}
 
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row",
 		Hook:    html.DataAttribute{Name: "tag-id", Value: t.GetId()},
 		Title:   hint,
@@ -822,7 +863,12 @@ func tagRow(tr i18n.Runtime, t *pb.Tag, active bool) ui.Node {
 		Gap:   true,
 		Slot:  "feed-slot", Item: true, Key: "tag-" + t.GetId(),
 		After: html.Button(html.Props{
-			Class:     "feed-gear",
+			Class:    "feed-gear",
+			TabIndex: -1,
+			// So closing the panel can find this gear again even when the rename it
+			// was used for re-sorted the row out from under the remembered element
+			// (G14, closeTagSettings).
+			Data:      map[string]string{"role": tagGearRole(t.GetId())},
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: actTagSettings}, {Name: "for-item", Value: t.GetId()}},
 			Title:     tr.T("rail", "settingsFor", i18n.Args{"name": name}),
 			Aria:      map[string]string{"label": tr.T("rail", "settingsFor", i18n.Args{"name": name})},
@@ -971,6 +1017,7 @@ func railFeedsHeader(tr i18n.Runtime, p railProps) ui.Node {
 	if len(p.feeds) > 0 {
 		extra = append(extra, html.Button(html.Props{
 			Class:    "rail-band-act",
+			TabIndex: -1,
 			DataAttr: html.DataAttribute{Name: "action", Value: "toggle-feed-filter"},
 			Aria: map[string]string{
 				"pressed": strconv.FormatBool(p.unreadFeedsOnly),
@@ -1004,6 +1051,7 @@ func railFeedsHeader(tr i18n.Runtime, p railProps) ui.Node {
 // precisely so those cannot disagree.
 func specialRow(tr i18n.Runtime, glyph, label, id string, count int, active bool) ui.Node {
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row stream-row",
 		Hook:    html.DataAttribute{Name: "source-id", Value: id},
 		Current: active,
@@ -1081,6 +1129,7 @@ func feedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
 	}
 
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row",
 		Hook:    html.DataAttribute{Name: "source-id", Value: f.GetSourceId()},
 		Raw:     hueVarFor(f.GetSourceId()),
@@ -1104,6 +1153,7 @@ func feedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
 		// drawn. The row and the gear sit side by side inside a wrapper instead.
 		After: html.Button(html.Props{
 			Class:     "feed-gear",
+			TabIndex:  -1,
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: "feed-settings"}, {Name: "for-item", Value: f.GetSourceId()}},
 			Title:     tr.T("rail", "settingsFor", i18n.Args{"name": f.GetTitle()}),
 			Aria:      map[string]string{"label": tr.T("rail", "settingsFor", i18n.Args{"name": f.GetTitle()})},

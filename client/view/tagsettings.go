@@ -50,6 +50,8 @@ type tagSettingsProps struct {
 	// settings most often has.
 	feeds  []string
 	saving bool
+	// err is a refused save, said in the panel beside the field it is about (G5).
+	err string
 }
 
 // The panel's actions, on the same delegated data-action path as everything
@@ -70,6 +72,9 @@ const (
 // fifty and is pressed and unpressed by the same rule. A picker whose "clear"
 // lives somewhere else is a picker where clearing is a thing you have to find.
 const glyphNone = "__none__"
+
+// tagGearRole is the data-role of a tag row's gear.
+func tagGearRole(id string) string { return "tag-gear-" + id }
 
 func tagSettings(tr i18n.Runtime, p tagSettingsProps) ui.Node {
 	// No early return on p.t == nil: like its five siblings (feed settings,
@@ -96,7 +101,13 @@ func tagSettings(tr i18n.Runtime, p tagSettingsProps) ui.Node {
 func tagSettingsBody(tr i18n.Runtime, p tagSettingsProps) []ui.Node {
 	t := p.t
 	id := t.GetId()
-	nameHint := tr.T("tagSettings", "nameHint")
+	// The cap is said beside the field (G19), and the field stops typing there.
+	nameHint := tr.T("tagSettings", "nameLimit", i18n.Args{"max": strconv.Itoa(maxNameChars)}) +
+		" " + tr.T("tagSettings", "nameHint")
+	nameAria := fieldAria(fieldTagLabel, nameHint)
+	if p.err != "" {
+		nameAria["invalid"] = "true"
+	}
 
 	out := []ui.Node{
 		kitHeading(glyphYours, tr.T("tagSettings", "rowGroup"), tr.T("tagSettings", "rowGroupHint")),
@@ -112,11 +123,12 @@ func tagSettingsBody(tr i18n.Runtime, p tagSettingsProps) []ui.Node {
 					Value:       p.draftLabel,
 					OnInput:     p.onLabelEdit,
 					Data:        map[string]string{"role": "tag-label"},
-					Aria:        fieldAria(fieldTagLabel, nameHint),
-					Raw:         renameAttrs(),
+					Aria:        nameAria,
+					Raw:         maxlengthAttr(),
 				}),
 				itemAction(actTagRename, tr.T("tagSettings", "rename"), id),
 			)}),
+		kitFieldError(kitFormSettings, p.err),
 
 		// The tag itself, stated as a FACT rather than as a disabled field.
 		//

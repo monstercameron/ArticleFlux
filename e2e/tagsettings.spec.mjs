@@ -119,11 +119,16 @@ test.describe('tag settings', () => {
     // on a phone the trip back to the article below has to close it first.
     await expect(panel.locator('.chip-static', { hasText: /^rust$/ })).toBeVisible();
 
-    // ...and the chip on the article says the label, because one tag reading as
-    // two different things in two panes is the failure this feature invites.
+    // ...and the chip on the article says the TAG, not the label: the label is
+    // what the sidebar calls the row, and the panel's own copy promises the chips
+    // say the tag (FEATURES 11a). It used to draw the label, so a renamed tag
+    // read "Systems programming" under every article and in the remove button's
+    // name, while the tag field beside it still wanted "rust" (G3).
     await backToArticle(page);
-    await expect(article.locator('.tag-chip', { hasText: 'Systems programming' }))
+    await expect(article.locator('.tag-chip', { hasText: 'rust' }))
       .toBeVisible({ timeout: 45_000 });
+    await expect(article.locator('.tag-chip', { hasText: 'Systems programming' })).toHaveCount(0);
+    await expect(article.locator('.tag-x')).toHaveAttribute('aria-label', 'Remove tag rust');
 
     // And it survives a reload, so it was stored rather than rendered.
     await page.reload();
@@ -149,7 +154,7 @@ test.describe('tag settings', () => {
     // what it displays, this click asks the server to remove a tag called
     // "Systems programming", which does not exist — and the chip stays put.
     await backToArticle(page);
-    const chip = article.locator('.tag-chip', { hasText: 'Systems programming' });
+    const chip = article.locator('.tag-chip', { hasText: 'rust' });
     await expect(chip).toBeVisible({ timeout: 45_000 });
     // The ×, by its action — not the chip. A chip's label is a LINK now
     // (rowlinks.spec.mjs: it routes to the tag and deliberately removes

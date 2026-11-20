@@ -666,6 +666,16 @@ message ImportOpmlRequest {
   // internal/opml is written against what real exports contain. A client that
   // parsed first would be a second, worse parser.
   bytes opml = 1;
+  // Which rows of the file this call may take: `start` is the index of the first
+  // row, `max_rows` how many (0 means "all of them", which is what a client that
+  // predates these fields sends). They exist because the whole file in one
+  // request is one deadline: a 3,000-row list outlasted the client's, the call
+  // was abandoned half way, and nobody was told how far it got. The client now
+  // walks the file in chunks and reports "n of m" between them; each chunk
+  // re-reads the file, which is a few hundred kilobytes and cheap beside the
+  // writes.
+  int32 start = 2;
+  int32 max_rows = 3;
 }
 
 // ImportSkip is one row that did not become a subscription, and why.
@@ -683,10 +693,12 @@ message ImportSkip {
 }
 
 message ImportOpmlResponse {
-  // subscribed counts rows that ended as a subscription, including the ones
-  // this reader already had — an import re-run must not read as 151 failures.
+  // subscribed counts the subscriptions this call CREATED. A row the reader
+  // already followed is not one — see already_subscribed — so a repeat import
+  // reads as "nothing new" rather than repeating the first one's number.
   int32 subscribed = 1;
-  // already_subscribed is how many of those were already in the sidebar.
+  // already_subscribed is how many rows were already in the sidebar (or were
+  // an earlier row of the same file).
   int32 already_subscribed = 2;
   // shared counts sources that already existed server-side and were attached
   // rather than created (A14). A fact about the deployment, not the reader.
@@ -696,6 +708,15 @@ message ImportOpmlResponse {
   // The file's own title, when it had one. Worth showing back: it is how a
   // person confirms they picked the export they meant to.
   string title = 6;
+  // How many rows the file holds, and the index of the first one this call did
+  // not reach (equal to total once the file is done). Zero in both is a server
+  // that predates chunking, which always does the whole file.
+  int32 total = 7;
+  int32 next = 8;
+  // How many rows of THIS call did not become a subscription — the exact count,
+  // where `skips` is capped at thirty. Zero from a server that predates it, in
+  // which case the length of `skips` is the best there is.
+  int32 skipped = 9;
 }
 
 message ExportOpmlRequest {}
@@ -1327,6 +1348,11 @@ message ListRecommendationsRequest {}
 
 message ListRecommendationsResponse {
   repeated Recommendation recommendations = 1;
+  // True when the reader has Smart+ review on and the last scoring pass could
+  // not review a single candidate (a rejected key, an open circuit, a provider
+  // outage). The suggestions then stand on the deterministic evidence alone and
+  // the screen says so, rather than presenting them as reviewed.
+  bool review_unavailable = 2;
 }
 
 message RefreshRecommendationsRequest {}

@@ -381,7 +381,7 @@ func palette(tr i18n.Runtime, p paletteProps) ui.Node {
 		),
 		list,
 		html.Div(html.Props{Class: "pal-foot"},
-			html.Text(tr.T("palette", "foot"))),
+			html.Text(keyHint(tr, "palette", "foot"))),
 	)
 }
 

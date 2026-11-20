@@ -356,3 +356,24 @@ export async function openAddFeed(page) {
   await expect(dialog).toBeVisible({ timeout: 20_000 });
   return dialog;
 }
+
+/**
+ * storeFakeKey saves a placeholder model key through the Smart+ tab.
+ *
+ * The harness server runs with no OPENAI_API_KEY on purpose, and Discover now
+ * offers Smart+ review only where it can run — so a spec that exercises the
+ * review switch has to give the instance a key first. A fake one is enough:
+ * `configured` means a key is stored, and whether the provider would accept it
+ * is not what those specs are about (podcast.spec does the same). Leaves the
+ * settings surface open.
+ */
+export async function storeFakeKey(page) {
+  await expect(async () => {
+    await openSettings(page);
+    await page.getByRole('button', { name: /^Smart\+$/ }).click({ timeout: 2000 });
+    await expect(page.locator('[data-role="smart-key"]')).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 30_000 });
+  await page.locator('[data-role="smart-key"]').fill('sk-e2e-not-a-real-credential');
+  await page.locator('[data-action="smart-key-save"]').click();
+  await expect(page.locator('[data-action="smart-key-clear"]')).toBeVisible({ timeout: 30_000 });
+}

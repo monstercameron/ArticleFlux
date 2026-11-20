@@ -90,8 +90,6 @@ func init() {
 		"untagged":         "Removed {tag} from {source}",
 		"unsubscribed":     "Unsubscribed from {feed}. Its articles are still on the server.",
 
-		"newCategoryName": "New folder",
-
 		// --- listening
 		"noSpeech":     "This browser has no speech synthesiser. Turn on Smart+ voice to use the server's.",
 		"smartVoiceOn": "Smart+ voice on — article text is sent to OpenAI to synthesise it.",

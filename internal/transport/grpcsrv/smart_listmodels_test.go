@@ -150,3 +150,72 @@ func TestListModelsFailsSoftOnProviderError(t *testing.T) {
 		t.Error("DefaultModel is empty even though the provider call failed")
 	}
 }
+
+// G9 of the second UX audit: the key row said "ready" about a key the provider
+// had already answered 401. The listing is the one call every Smart+ tab load
+// makes, so it is where the refusal is noticed; a 401 or a 403 says so on the
+// response, and a 500 (an outage, not a verdict on the key) does not.
+func TestListModelsSaysWhenTheProviderRejectsTheKey(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   bool
+	}{
+		{http.StatusUnauthorized, true},
+		{http.StatusForbidden, true},
+		{http.StatusInternalServerError, false},
+	} {
+		sc := ownerScope("admin")
+		rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return jsonResponse(tc.status, map[string]any{
+				"error": map[string]string{"message": "nope"},
+			}), nil
+		})
+		s := listModelsServer(t, sc, rt)
+		res, err := s.ListModels(context.Background(), &pb.ListModelsRequest{})
+		if err != nil {
+			t.Fatalf("%d: ListModels: %v", tc.status, err)
+		}
+		if res.GetKeyRejected() != tc.want {
+			t.Errorf("provider %d: KeyRejected = %v, want %v", tc.status, res.GetKeyRejected(), tc.want)
+		}
+	}
+}
+
+// G8: a blank model field is "use the default", and an unrelated save must not
+// be mistaken for it.
+func TestSetSmartConfigResetsTheModelOnlyWhenAsked(t *testing.T) {
+	sc := ownerScope("admin")
+	s, _ := smartConfigServer(t, nil, sc, fixedScope(sc))
+	ctx := context.Background()
+	set := func(req *pb.SetSmartConfigRequest) string {
+		t.Helper()
+		res, err := s.SetSmartConfig(ctx, req)
+		if err != nil {
+			t.Fatalf("SetSmartConfig(%v): %v", req, err)
+		}
+		return res.GetConfig().GetModel()
+	}
+
+	if got := set(&pb.SetSmartConfigRequest{Model: "gpt-made-up-model"}); got != "gpt-made-up-model" {
+		t.Fatalf("model after a save = %q", got)
+	}
+	// What a key-only save, or any client that predates reset_model, sends.
+	if got := set(&pb.SetSmartConfigRequest{}); got != "gpt-made-up-model" {
+		t.Errorf("an empty model with no reset flag changed the model to %q", got)
+	}
+	if got := set(&pb.SetSmartConfigRequest{ResetModel: true}); got != "" {
+		t.Errorf("reset left the model at %q, want it unset so the default applies", got)
+	}
+	// The config still names the default, so the screen can say what "blank" means.
+	res, err := s.GetSmartConfig(ctx, &pb.GetSmartConfigRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.GetDefaultModel() != llm.DefaultModel || res.GetModel() != "" {
+		t.Errorf("after reset: model %q, default %q", res.GetModel(), res.GetDefaultModel())
+	}
+	// A model typed in the same request wins over the flag: naming one is explicit.
+	if got := set(&pb.SetSmartConfigRequest{Model: "gpt-x", ResetModel: true}); got != "gpt-x" {
+		t.Errorf("model + reset = %q, want the named model", got)
+	}
+}

@@ -50,6 +50,20 @@ func (c *Client) SetSmartConfig(parent context.Context, key string, clear bool, 
 	return res.GetConfig(), nil
 }
 
+// SetSmartModel saves the model, or puts it back to the default when model is
+// empty. The server has always read an empty `model` as "leave it alone" — a
+// key-only save sends one — so "blank means the default", which the field says,
+// needs its own flag on the wire (G8): this is the one caller that sets it.
+func (c *Client) SetSmartModel(parent context.Context, model string) (*pb.GetSmartConfigResponse, error) {
+	ctx, cancel := c.ctx(parent)
+	defer cancel()
+	res, err := c.smart.SetSmartConfig(ctx, ModelRequest(model))
+	if err != nil {
+		return nil, c.track(err)
+	}
+	return res.GetConfig(), nil
+}
+
 // SetTranslateArticles records the owner's consent for article translation
 // (§10.5b, `smart.translate_articles`) and nothing else.
 //

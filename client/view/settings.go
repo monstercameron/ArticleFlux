@@ -13,7 +13,6 @@ import (
 	"github.com/monstercameron/ArticleFlux/client/data"
 	"github.com/monstercameron/ArticleFlux/client/design"
 	"github.com/monstercameron/ArticleFlux/client/i18n"
-	"github.com/monstercameron/ArticleFlux/client/platform"
 	pb "github.com/monstercameron/ArticleFlux/internal/pb/articleflux/v1"
 )
 
@@ -353,7 +352,12 @@ func settingsPane(tr i18n.Runtime, p settingsProps) ui.Node {
 			)}
 			break
 		}
-		body = []ui.Node{ui.CreateElement(Discover, DiscoverProps{Client: p.client})}
+		// NoKey only once the server has SAID so: an owner's config, fetched when
+		// the tab opens. Unknown is not missing — a member cannot read the config,
+		// and a page that hid the feature on a guess would hide it from everyone
+		// on an instance that has a key.
+		body = []ui.Node{ui.CreateElement(Discover, DiscoverProps{Client: p.client,
+			NoKey: p.smart.cfg != nil && !p.smart.cfg.GetConfigured()})}
 	case setFeeds:
 		body = settingsFeeds(tr, p)
 	case setData:
@@ -1669,9 +1673,4 @@ func humanDuration(tr i18n.Runtime, s int64) string {
 }
 
 // slidesHint is the slideshow group's hint, without the key on a touch screen.
-func slidesHint(tr i18n.Runtime) string {
-	if platform.CoarsePointer() {
-		return tr.T("settings", "slidesGroupHintTouch")
-	}
-	return tr.T("settings", "slidesGroupHint")
-}
+func slidesHint(tr i18n.Runtime) string { return keyHint(tr, "settings", "slidesGroupHint") }

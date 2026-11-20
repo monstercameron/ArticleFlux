@@ -2,6 +2,7 @@ package demodata
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -88,8 +89,9 @@ func TestImportIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second import: %v", err)
 	}
-	if res.GetSubscribed() != 2 || res.GetAlreadySubscribed() != 2 {
-		t.Errorf("re-run reported subscribed=%d already=%d, want 2 and 2",
+	// G12: Subscribed is what the import created, so a repeat has none.
+	if res.GetSubscribed() != 0 || res.GetAlreadySubscribed() != 2 {
+		t.Errorf("re-run reported subscribed=%d already=%d, want 0 and 2",
 			res.GetSubscribed(), res.GetAlreadySubscribed())
 	}
 	if res.GetFolders() != 0 {
@@ -141,7 +143,8 @@ func TestExportRoundTripsBackThroughImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("importing our own export: %v", err)
 	}
-	if int(res.GetSubscribed()) != len(seedFeeds) || len(res.GetSkips()) != 0 {
+	// Every one of those feeds is already in the seeded instance, so none is new.
+	if res.GetSubscribed() != 0 || len(res.GetSkips()) != 0 {
 		t.Errorf("our own export came back as subscribed=%d skips=%d",
 			res.GetSubscribed(), len(res.GetSkips()))
 	}
@@ -150,5 +153,37 @@ func TestExportRoundTripsBackThroughImport(t *testing.T) {
 	if res.GetAlreadySubscribed() != int32(len(seedFeeds)) {
 		t.Errorf("already_subscribed=%d; a fresh demo instance has the same seven feeds",
 			res.GetAlreadySubscribed())
+	}
+}
+
+// The walk: ranges that add up to the whole file, with Total and Next saying
+// where it stands, the way the client drives the real server.
+func TestImportInRanges(t *testing.T) {
+	_, r := newTest(t)
+	var b strings.Builder
+	b.WriteString(`<opml version="2.0"><body>`)
+	for i := 0; i < 7; i++ {
+		fmt.Fprintf(&b, `<outline type="rss" text="F%d" xmlUrl="https://range%d.example/feed.xml"/>`, i, i)
+	}
+	b.WriteString(`</body></opml>`)
+
+	var subscribed, next int32
+	for steps := 0; next < 7; steps++ {
+		if steps > 7 {
+			t.Fatal("the walk does not terminate")
+		}
+		res, err := r.ImportOpml(context.Background(),
+			&pb.ImportOpmlRequest{Opml: []byte(b.String()), Start: next, MaxRows: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.GetTotal() != 7 || res.GetNext() <= next {
+			t.Fatalf("Total=%d Next=%d from %d", res.GetTotal(), res.GetNext(), next)
+		}
+		subscribed += res.GetSubscribed()
+		next = res.GetNext()
+	}
+	if subscribed != 7 {
+		t.Errorf("the ranges subscribed %d, want 7", subscribed)
 	}
 }

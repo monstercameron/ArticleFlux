@@ -190,10 +190,23 @@ func (s *SmartServer) SetSmartConfig(ctx context.Context, req *pb.SetSmartConfig
 		s.log.Info("smart+ api key set", "by", sc.UserID)
 	}
 
-	if m := strings.TrimSpace(req.GetModel()); m != "" {
+	// An empty `model` has always meant "leave it alone" — a key-only save sends
+	// it empty, and so does every client that predates reset_model — so putting
+	// the model BACK to the default needed a word of its own. Without one the
+	// field said "leave it blank for the default", saved nothing, and the old
+	// model stayed (G8). Stored as the empty string, which is what "no
+	// override" has always been: WithModel reads it as unset and the llm layer
+	// falls to DefaultModel.
+	switch m := strings.TrimSpace(req.GetModel()); {
+	case m != "":
 		if err := s.settings.SetSystemValue(ctx, store.KeySmartModel, m, sc.UserID); err != nil {
 			return nil, errKey(codes.Internal, "srv.saveModelFailed", "Couldn't save the model.", nil)
 		}
+	case req.GetResetModel():
+		if err := s.settings.SetSystemValue(ctx, store.KeySmartModel, "", sc.UserID); err != nil {
+			return nil, errKey(codes.Internal, "srv.saveModelFailed", "Couldn't save the model.", nil)
+		}
+		s.log.Info("smart+ model reset to the default", "by", sc.UserID)
 	}
 
 	// T2. The key was read on every classification batch and written by nothing,
@@ -481,6 +494,10 @@ func (s *SmartServer) ListModels(ctx context.Context, _ *pb.ListModelsRequest) (
 		// and a provider hiccup on a listing call must not make the model
 		// field disappear from a settings screen that otherwise loaded fine.
 		s.log.Warn("listing smart+ models", "err", err)
+		// The one failure worth saying out loud: the provider has looked at the
+		// stored key and refused it. Everything else about a listing is a hiccup
+		// the picker can absorb; this is the key row's "ready" being untrue (G9).
+		out.KeyRejected = errors.Is(err, llm.ErrKeyRejected)
 		return out, nil
 	}
 	out.Models = models
@@ -550,11 +567,13 @@ func (s *SmartServer) TranslateUI(ctx context.Context, req *pb.TranslateUIReques
 		// batch was too big for the model's output ceiling.
 		return nil, errKey(codes.ResourceExhausted, "srv.translationTruncated",
 			"The translation was cut off before it finished. Try again.", nil)
+	case errors.Is(err, llm.ErrCircuitOpen):
+		return nil, smartPaused()
 	case err != nil:
 		// The provider's text can echo the request, so it goes to the log with
 		// the request id and a flat message goes to the client (§20.7).
 		s.log.Error("ui translation failed", "locale", locale, "err", err)
-		return nil, errKey(codes.Unavailable, "srv.translateFailed",
+		return nil, errKey(providerFailed, "srv.translateFailed",
 			"Couldn't translate the interface just now.", nil)
 	}
 

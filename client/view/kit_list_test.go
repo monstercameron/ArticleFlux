@@ -151,6 +151,7 @@ func TestKitShapeSeesKeys(t *testing.T) {
 
 func kitAfterSpecialRow(tr i18n.Runtime, glyph, label, id string, count int, active bool) ui.Node {
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row stream-row",
 		Hook:    html.DataAttribute{Name: "source-id", Value: id},
 		Current: active,
@@ -177,6 +178,7 @@ func kitAfterFeedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
 		slot = "feed-slot feed-nested"
 	}
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row",
 		Hook:    html.DataAttribute{Name: "source-id", Value: f.GetSourceId()},
 		Raw:     hueVarFor(f.GetSourceId()),
@@ -189,6 +191,7 @@ func kitAfterFeedRow(tr i18n.Runtime, f *pb.Feed, active, nested bool) ui.Node {
 		Slot: slot, Item: true, Key: feedRowKey(f.GetSourceId(), nested),
 		After: html.Button(html.Props{
 			Class:     "feed-gear",
+			TabIndex:  -1,
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: "feed-settings"}, {Name: "for-item", Value: f.GetSourceId()}},
 			Title:     tr.T("rail", "settingsFor", i18n.Args{"name": f.GetTitle()}),
 			Aria:      map[string]string{"label": tr.T("rail", "settingsFor", i18n.Args{"name": f.GetTitle()})},
@@ -212,6 +215,7 @@ func kitAfterTopicRow(tr i18n.Runtime, slug string, active bool, unread int) ui.
 		label = tr.T("rail", "categoryUnreadAria", i18n.CountWith(unread, i18n.Args{"name": name}))
 	}
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row topic-row",
 		Hook:    html.DataAttribute{Name: "category-slug", Value: slug},
 		Current: active, Label: label,
@@ -229,6 +233,7 @@ func kitAfterUncategorisedRow(tr i18n.Runtime, active bool, unread int) ui.Node 
 		label = tr.T("rail", "categoryUnreadAria", i18n.CountWith(unread, i18n.Args{"name": name}))
 	}
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row topic-row",
 		Hook:    html.DataAttribute{Name: "category-none", Value: "1"},
 		Current: active, Label: label,
@@ -246,6 +251,7 @@ func kitAfterTagRow(tr i18n.Runtime, t *pb.Tag, active bool) ui.Node {
 		hint = tr.T("rail", "taggedRenamed", i18n.Args{"label": name, "name": t.GetName()})
 	}
 	return kitRow(kitRowProps{
+		NoTab:   true,
 		Class:   "feed-row",
 		Hook:    html.DataAttribute{Name: "tag-id", Value: t.GetId()},
 		Title:   hint,
@@ -258,6 +264,8 @@ func kitAfterTagRow(tr i18n.Runtime, t *pb.Tag, active bool) ui.Node {
 		Slot:  "feed-slot", Item: true, Key: "tag-" + t.GetId(),
 		After: html.Button(html.Props{
 			Class:     "feed-gear",
+			TabIndex:  -1,
+			Data:      map[string]string{"role": tagGearRole(t.GetId())},
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: actTagSettings}, {Name: "for-item", Value: t.GetId()}},
 			Title:     tr.T("rail", "settingsFor", i18n.Args{"name": name}),
 			Aria:      map[string]string{"label": tr.T("rail", "settingsFor", i18n.Args{"name": name})},
@@ -276,23 +284,27 @@ func kitAfterCategoryRows(tr i18n.Runtime, p railProps, id, name string, feeds [
 	if editable {
 		gear = html.Button(html.Props{
 			Class:     "feed-gear cat-gear",
+			TabIndex:  -1,
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: actCatOpen}, {Name: "value", Value: id}},
 			Title:     tr.T("rail", "editCategory", i18n.Args{"name": name}),
 			Aria:      map[string]string{"label": tr.T("rail", "editCategory", i18n.Args{"name": name})},
 		}, html.Text("✎"))
 	}
 	slot := kitRow(kitRowProps{
-		Class:   "feed-row cat-row",
-		Hook:    html.DataAttribute{Name: "folder-id", Value: id},
-		Current: p.sel.FolderID == id,
-		Label:   tr.T("rail", "categoryAria", i18n.CountWith(len(feeds), i18n.Args{"name": name})),
-		Name:    name,
-		Count:   kitCount(tr, unread),
-		Gap:     true,
-		Slot:    "feed-slot cat-slot", Key: "cat-" + id,
+		NoTab:     true,
+		Class:     "feed-row cat-row",
+		Hook:      html.DataAttribute{Name: "folder-id", Value: id},
+		Current:   p.sel.FolderID == id,
+		Label:     tr.T("rail", "categoryAria", i18n.CountWith(len(feeds), i18n.Args{"name": name})),
+		Name:      name,
+		NameTitle: name,
+		Count:     kitCount(tr, unread),
+		Gap:       true,
+		Slot:      "feed-slot cat-slot", Key: "cat-" + id,
 		SlotData: map[string]string{"open": strconv.FormatBool(open)},
 		Before: html.Button(html.Props{
 			Class:     "cat-caret",
+			TabIndex:  -1,
 			DataAttrs: []html.DataAttribute{{Name: "action", Value: actCatToggle}, {Name: "value", Value: id}},
 			Aria:      kitDisclosureAria(tr.T("rail", "showCategory", i18n.Args{"name": name}), open, kitFoldID(key)),
 		}, html.Text(glyphClosed)),
@@ -344,6 +356,7 @@ func kitAfterRailPane(tr i18n.Runtime, p railProps) ui.Node {
 		}
 		bandExtra = append(bandExtra, html.Button(html.Props{
 			Class:    "rail-band-act",
+			TabIndex: -1,
 			DataAttr: html.DataAttribute{Name: "action", Value: "toggle-feed-filter"},
 			Aria: map[string]string{
 				"pressed": strconv.FormatBool(p.unreadFeedsOnly),
@@ -417,8 +430,12 @@ func kitAfterRailPane(tr i18n.Runtime, p railProps) ui.Node {
 }
 
 func kitAfterCategories(tr i18n.Runtime, p railProps) []ui.Node {
+	if len(p.feeds) == 0 && len(p.folders) == 0 && p.total == 0 {
+		return nil
+	}
 	newCat := html.Button(html.Props{
 		Class:    "rail-band-act",
+		TabIndex: -1,
 		DataAttr: html.DataAttribute{Name: "action", Value: actCatNew},
 		Aria:     map[string]string{"label": tr.T("rail", "addCategoryA")},
 	}, html.Text(tr.T("rail", "addCategory")))
@@ -971,6 +988,7 @@ func kitAfterDiscoverCard(tr i18n.Runtime, r *pb.Recommendation, busy bool, leav
 		html.Div(html.Props{Class: "discover-card-actions"},
 			html.Button(html.Props{
 				Type: "button", Class: "discover-accept", Disabled: busy,
+				Data: map[string]string{"role": roleDiscoverFollow + r.GetDomain()},
 				Raw:  map[string]any{attrDiscoverAccept: r.GetDomain()},
 				Aria: map[string]string{"describedby": titleID},
 			}, html.Text(acceptLabel(tr, busy))),
