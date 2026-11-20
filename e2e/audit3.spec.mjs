@@ -179,7 +179,13 @@ test.describe('a topic has an address (H12)', () => {
     test.skip(!(await row.count()), 'no classified articles on this instance, so the rail shows no topics yet (H19)');
     const slug = await row.getAttribute('data-category-slug');
     await row.click();
-    await expect.poll(() => new URL(page.url()).pathname, { timeout: 15_000 }).toBe(`/topic/${slug}`);
+    // The topic, and then whichever article the reader opened on arriving — it
+    // opens the first unread one, so the address is the topic's or the topic's
+    // with /read/<id> after it, depending on whether anything in it is unread.
+    // The first version of this demanded the bare form and failed on CI, where
+    // the fixture's Software article is still unread at this point.
+    await expect.poll(() => new URL(page.url()).pathname, { timeout: 15_000 })
+      .toMatch(new RegExp(`^/topic/${slug}(/read/[^/]+)?$`));
   });
 });
 

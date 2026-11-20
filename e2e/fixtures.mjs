@@ -39,10 +39,36 @@ export const test = base.extend({
  * reset is retried once. A run that can heal is worth more than a run that
  * explains itself well, and the message covers the case where it cannot.
  */
+/**
+ * dropProbeFeeds unsubscribes the shared account from every feed a spec added
+ * for its own purposes, before the next test starts.
+ *
+ * reset-state clears what a reader DID — read marks, notes, tags, preferences —
+ * and leaves what they FOLLOW, because the fixture feeds are the point. That
+ * left one hole: a spec that subscribes to something and fails before it
+ * unsubscribes changes the account for every spec after it, and the failures
+ * turn up somewhere else entirely (six slideshow tests reading "1 of 6" for
+ * "1 of 5", after a link test leaked one feed). A night of chasing those is
+ * what this is here to stop.
+ *
+ * The convention that makes it safe to do blindly: a probe feed's address
+ * carries a query string (`…/with-links.xml?p=desktop`), and a fixture's never
+ * does. So "contains ?" is "a test made this". Best effort — a server built
+ * before the endpoint existed answers 404, and that is not this test's failure.
+ */
+async function dropProbeFeeds(page, baseURL) {
+  try {
+    await page.request.post(`${baseURL}/debug/unsubscribe?match=${encodeURIComponent('?')}`);
+  } catch { /* the reset above already proved the server is there */ }
+}
+
 async function resetState(page, baseURL) {
   try {
     const res = await page.request.post(`${baseURL}/debug/reset-state`);
-    if (res.ok()) return;
+    if (res.ok()) {
+      await dropProbeFeeds(page, baseURL);
+      return;
+    }
     throw new Error(`reset-state answered ${res.status()}; is the server in DevMode?`);
   } catch (first) {
     if (await healthy()) {
