@@ -1021,7 +1021,7 @@ func KeepScrollAnchored(selector string) {
 			return nil
 		}
 		if delta := el.Get("scrollHeight").Float() - before; delta > 0 {
-			el.Set("scrollTop", top+delta)
+			setScrollTopByApp(el, top+delta)
 		}
 		return nil
 	})
@@ -1090,6 +1090,7 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 		return Listener{}
 	}
 	root := doc
+	watchReaderInput(doc)
 	pending := false
 	last := ""
 	// The scroll position at the previous measurement, and whether there has
@@ -1146,7 +1147,28 @@ func OnTopmostChild(rootSelector, matchSelector, attr string, fn func(value stri
 		// flight), so this is a tolerance rather than an equality test. Half a
 		// pixel is far below anything that could carry the fold across an
 		// article boundary, and far above float noise.
-		moved := !measured || top-prevTop > 0.5 || prevTop-top > 0.5
+		//
+		// And not when the position is one the APP put the pane at (see
+		// setScrollTopByApp). The app moving the pane is the same non-event a
+		// reflow is: nobody scrolled. It became a different thing from a reflow
+		// when holdChildAtTop arrived, because a hold answers a reflow by writing
+		// scrollTop — so every body that landed above the reader was now "the
+		// position changed", which this had been telling callers means the
+		// reader went there.
+		byApp := appScrollTop >= 0 && top-appScrollTop <= 0.5 && appScrollTop-top <= 0.5
+		if !byApp {
+			appScrollTop = -1
+		}
+		// And, underneath every other test here, not until the reader has
+		// touched something since the app last SENT the pane somewhere
+		// (readerSinceApp). Deciding when an animated trip has ended turned out
+		// to be a question with no reliable answer — stillness, `scrollend` and
+		// "the target is at the top" were each observed being wrong by a few
+		// frames on a loaded machine — and each time the last few pixels of the
+		// app's own animation were read as the reader scrolling past an article.
+		// This does not depend on getting that moment right: a position that
+		// changed with nobody's hands on the machine was not changed by anybody.
+		moved := readerSinceApp && !byApp && (!measured || top-prevTop > 0.5 || prevTop-top > 0.5)
 		prevTop, measured = top, true
 		if found != last {
 			last = found
@@ -1629,6 +1651,9 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done
 			// own setting is what is consulted, falling back to the OS — a reader
 			// who turned motion off here should not still get a scroll animation
 			// because their machine never had an opinion.
+			// From here until the reader touches something, what moves the
+			// pane is this function and what it starts.
+			readerSinceApp = false
 			if smooth && !MotionReduced() {
 				if holdStop != nil {
 					holdStop()
@@ -1643,13 +1668,11 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done
 			if travelStop != nil {
 				travelStop()
 			}
-			el.Set("scrollTop", child.Get("offsetTop"))
-			// Final the moment it is assigned, so there is nothing to wait for —
-			// but not necessarily STAYING final: see holdChildAtTop.
-			holdChildAtTop(el, childSelector)
-			if done != nil {
-				done()
-			}
+			setScrollTopByApp(el, child.Get("offsetTop").Float())
+			// Assigned, which is not the same as arrived, and not the same as
+			// staying. The hold reports the end of this trip, because only it
+			// knows which of those happened: see holdChildAtTop.
+			holdChildAtTop(el, childSelector, done)
 			return nil
 		}
 		if tries >= maxFrames {
@@ -1672,51 +1695,81 @@ func ScrollChildToTop(containerSelector, childSelector string, smooth bool, done
 // travelStop ends the travel now in flight, if any, without reporting it.
 //
 // One at a time, like the hold: a second open while the first is still in flight
-// redirects the same pane, both would see it fall still at the same moment, and
+// redirects the same pane, both would see it come to rest at the same moment, and
 // the first would then "correct" the pane back to an article the reader has
 // already left. The superseded travel ends silently — its caller's guard has
 // been re-armed for the new target and is the new travel's to release.
 var travelStop func()
 
 // travelToChild sees a smooth scroll to a child through to its end, and reports
-// that end once — whichever of the three ways it comes.
+// that end once — whichever way it comes.
 //
 // The caller has armed something for the duration (the reader's "ignore what
 // passes under the fold on the way" guard), and a smooth scroll over a long
-// article is most of a second. Three things can happen in that time, and each
-// of them was a wrong answer when this was only "wait until it stops":
+// article is most of a second. Reporting the end early releases that guard with
+// the pane still moving, and the article it is passing over is then taken for
+// the one being read and MARKED read. That is the failure this function exists
+// to make impossible, and it happened three different ways.
 //
-//   - It arrives. Then the child is held where it landed (holdChildAtTop), as an
-//     instant open's is, because the articles above it may still be skeletons.
-//   - It stops SHORT. The destination was the child's offset when the scroll was
-//     issued; a body landing above it mid-flight moves the child and not the
-//     destination, so the scroll ends in the middle of the article before — which
-//     the caller, released, then takes for the article being read and marks read.
-//     Nobody chose that article. So the end is checked against where the child
-//     is NOW, and put right before anybody is told the travel is over.
-//   - The reader takes the scroll over: a wheel, a finger. That ends the app's
-//     travel at once — the browser has already cancelled the animation — and the
-//     caller is released at once, because everything from here is the reader's
-//     own scrolling and has to count. Left armed until the pane fell still, the
-//     guard discarded every article a reader scrolled back through, for as long
-//     as they kept scrolling. No correction and no hold in this case: where the
-//     pane is now is where they put it.
+// # When the travel is over
+//
+// It used to be "two consecutive frames at the same offset", polled. That is
+// true of a scroll that has not started yet (a loaded main thread starts one a
+// few frames late), and — measured, in a trace — true in the MIDDLE of one when
+// frames are being dropped: the offset the page can read is only refreshed when
+// a frame is committed, so two animation callbacks can see the same number 64px
+// short of the destination. Stillness is not evidence of arrival. So, in order:
+//
+//   - The child is at the top of the pane, on two frames running. This is the
+//     thing actually being waited for, so it is asked directly.
+//   - The browser says the scroll ended (`scrollend`), where it has that event.
+//   - The scroll never began: a dozen frames with no movement at all. The child
+//     was already where it was going, or cannot be scrolled to.
+//   - It began and has been still for ten frames — long enough that dropped
+//     frames do not look like it. This is how a scroll that stopped SHORT is
+//     noticed where there is no `scrollend`: the destination was the child's
+//     offset when the scroll was issued, and a body landing above it mid-flight
+//     moves the child and not the destination.
+//   - A cap, because a release that is late is survivable and one that never
+//     comes is not (see ScrollChildToTop).
+//
+// Whichever it was, the hold then takes over (holdChildAtTop): it puts the child
+// at the top if the scroll ended short, keeps it there while the articles above
+// finish loading, and is what finally tells the caller — when the child is
+// there, or when it is clear it will not be.
+//
+// # The reader takes over
+//
+// A wheel or a finger ends the app's travel at once — the browser has already
+// cancelled the animation — and the caller is released at once, because
+// everything from here is the reader's own scrolling and has to count. Left
+// armed until the pane came to rest, the guard discarded every article a reader
+// scrolled back through for as long as they kept scrolling. No correction and
+// no hold in this case: where the pane is now is where they put it.
 //
 // Only inputs that MOVE the pane count as taking over. A press or a key may be
-// the next navigation, or nothing at all, while the animation carries on; lifting
-// the guard for those would expose exactly the articles it is there to cover.
+// the next navigation, or nothing at all, while the animation carries on;
+// lifting the guard for those would expose exactly the articles it covers.
 func travelToChild(el js.Value, childSelector string, done func()) {
 	if travelStop != nil {
 		travelStop()
 	}
+	const (
+		maxFrames   = 240 // ~4s at 60fps, well past any smooth scroll
+		startFrames = 12  // how long a scroll is given to begin
+		stillFrames = 10  // how long it must be still to be believed stopped
+	)
 	doc := js.Global().Get("document")
 	over := false
-	var onInput js.Func
+	ended := false
+	var onInput, onEnd, frame js.Func
 	opts := js.Global().Get("Object").New()
 	opts.Set("passive", true)
 	opts.Set("capture", true)
 	inputs := []string{"wheel", "touchmove"}
-	// end reports whether this call is the one that ended the travel.
+	// end reports whether this call is the one that ended the travel. The frame
+	// func is not released here: a frame may already be queued, and it releases
+	// itself when it next runs and finds the travel over.
 	end := func() bool {
 		if over {
 			return false
@@ -1726,7 +1779,9 @@ func travelToChild(el js.Value, childSelector string, done func()) {
 		for _, ev := range inputs {
 			doc.Call("removeEventListener", ev, onInput, opts)
 		}
+		el.Call("removeEventListener", "scrollend", onEnd)
 		onInput.Release()
+		onEnd.Release()
 		return true
 	}
 	travelStop = func() { end() }
@@ -1736,63 +1791,21 @@ func travelToChild(el js.Value, childSelector string, done func()) {
 		}
 		return nil
 	})
+	onEnd = js.FuncOf(func(_ js.Value, _ []js.Value) any { ended = true; return nil })
 	for _, ev := range inputs {
 		doc.Call("addEventListener", ev, onInput, opts)
 	}
-	whenScrollSettles(el, func() {
-		if !end() {
-			return
-		}
-		// Re-queried: the reconciler may have replaced the node since.
-		if c := doc.Call("querySelector", childSelector); c.Truthy() {
-			want := c.Get("offsetTop").Float()
-			if d := want - el.Get("scrollTop").Float(); d > 1 || d < -1 {
-				el.Set("scrollTop", want)
-			}
-			holdChildAtTop(el, childSelector)
-		}
-		if done != nil {
-			done()
-		}
-	})
-}
+	el.Call("addEventListener", "scrollend", onEnd)
 
-// whenScrollSettles calls fn once a smooth scroll has stopped moving.
-//
-// Polled rather than listened for: `scrollend` is not available everywhere this
-// runs, and the alternative — a fixed delay matched to the browser's animation —
-// is a guess that is wrong on a slow machine in the one direction that matters.
-// Two consecutive frames at the same offset is the definition of stopped.
-//
-// But only once it has STARTED. A smooth scroll is issued on one frame and
-// begins moving on a later one, and on a machine with frames to spare that is
-// the next; on a loaded one it is not, and "two frames at the same offset" is
-// then true of a scroll that has not begun. That released the caller at the
-// start of the travel instead of the end of it: the guard was off for the whole
-// of the trip, and the article the trip passed over was marked read. So a scroll
-// that has not moved yet is given a dozen frames to do so before stillness is
-// believed — long enough for a slow start, short enough that a scroll with
-// nowhere to go (the child is already at the top) does not keep anyone waiting.
-//
-// Capped, because a scroll can be interrupted by another one and then this would
-// watch a position that keeps moving for as long as the reader keeps scrolling.
-// Reaching the cap still calls fn: the caller is waiting to be released, and a
-// release that is late is survivable where one that never comes is not.
-func whenScrollSettles(el js.Value, fn func()) {
-	if fn == nil {
-		return
-	}
-	const (
-		maxFrames   = 90 // ~1.5s at 60fps, well past any smooth scroll
-		startFrames = 12 // how long a scroll is given to begin
-	)
 	start := el.Get("scrollTop").Float()
 	begun := false
-	last := -1.0
-	same := 0
-	tries := 0
-	var frame js.Func
+	last := start
+	same, at, tries := 0, 0, 0
 	frame = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		if over {
+			frame.Release()
+			return nil
+		}
 		tries++
 		now := el.Get("scrollTop").Float()
 		if now != start {
@@ -1801,12 +1814,24 @@ func whenScrollSettles(el js.Value, fn func()) {
 		if now == last {
 			same++
 		} else {
-			same = 0
-			last = now
+			same, last = 0, now
 		}
-		if (same >= 2 && (begun || tries >= startFrames)) || tries >= maxFrames {
+		// Re-queried: the reconciler may have replaced the node since.
+		if c := doc.Call("querySelector", childSelector); c.Truthy() {
+			if d := c.Get("offsetTop").Float() - now; d <= 1 && d >= -1 {
+				at++
+			} else {
+				at = 0
+			}
+		}
+		// `ended` only once it has begun: a `scrollend` still owed for whatever
+		// moved the pane BEFORE this trip would otherwise end it on its first frame.
+		if at >= 2 || (ended && begun) || (!begun && tries >= startFrames) ||
+			(begun && same >= stillFrames) || tries >= maxFrames {
 			frame.Release()
-			fn()
+			if end() {
+				holdChildAtTop(el, childSelector, done)
+			}
 			return nil
 		}
 		js.Global().Call("requestAnimationFrame", frame)
@@ -2995,12 +3020,72 @@ func WriteClipboard(text string, done func(ok bool)) {
 	promise.Call("then", onResolved, onRejected)
 }
 
-// holdStop ends the hold now in force, if any. One at a time: a second open
-// supersedes the first, whose target is no longer where the reader is going.
+// appScrollTop is where the app itself last put the article pane, or -1.
+//
+// OnTopmostChild reads it to tell the app moving the pane from the reader
+// moving it; setScrollTopByApp is the only writer. What is recorded is the
+// offset the browser actually APPLIED, read back after the write — a pane near
+// the end of its content clamps the request, and the clamped figure is the one
+// the next scroll event will carry.
+var appScrollTop = -1.0
+
+// readerSinceApp is whether the reader has put a hand on the machine since the
+// app last sent the article pane to an article (ScrollChildToTop).
+//
+// False from the moment a trip is issued; true again at the first wheel, touch,
+// press or key — anything that could be the reader moving the pane, or about
+// to. It starts false: before any input at all, nothing on screen was put there
+// by the reader. OnTopmostChild reads it to decide whether a change of position
+// was the reader's; nothing else does.
+//
+// Deliberately broad about what counts as input and deliberately not a timer.
+// A press that is not a scroll (the Like button, mid-animation) sets it and
+// should: the cost of a false "the reader is here" is one article marked read
+// that the caller's own guard usually still covers, while the cost of missing
+// real input is a reader whose scrolling stops counting, with no way for them
+// to find out why.
+var readerSinceApp = false
+
+// readerWatched is whether watchReaderInput has installed its listeners.
+var readerWatched = false
+
+// watchReaderInput turns readerSinceApp on at the reader's first input after a
+// trip. Installed once for the life of the page, on the document, in the
+// capture phase — so it runs before the handler that may start the next trip,
+// which then turns it off again in the right order.
+func watchReaderInput(doc js.Value) {
+	if readerWatched {
+		return
+	}
+	readerWatched = true
+	opts := js.Global().Get("Object").New()
+	opts.Set("passive", true)
+	opts.Set("capture", true)
+	// Never released: it lives as long as the document it is bound to.
+	fn := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		readerSinceApp = true
+		return nil
+	})
+	for _, ev := range []string{"wheel", "touchstart", "touchmove", "pointerdown", "keydown"} {
+		doc.Call("addEventListener", ev, fn, opts)
+	}
+}
+
+// setScrollTopByApp moves a pane on the app's behalf and says so.
+func setScrollTopByApp(el js.Value, top float64) {
+	el.Set("scrollTop", top)
+	appScrollTop = el.Get("scrollTop").Float()
+}
+
+// holdStop ends the hold now in force, if any, without reporting it. One at a
+// time: a second open supersedes the first, whose target is no longer where the
+// reader is going — and whose caller's guard has been re-armed for the new
+// target, so it is the new trip's to release.
 var holdStop func()
 
-// holdChildAtTop keeps a child where ScrollChildToTop put it while the layout
-// above it settles, until the reader takes the scroll over.
+// holdChildAtTop keeps a child at the top of its pane while the layout around
+// it settles, until the reader takes the scroll over — and reports, once, when
+// the child has got there or is not going to.
 //
 // Opening an article by address (or by a click that replaces the stream) seeds
 // the article BEFORE it so scrolling up works at once, then scrolls the target
@@ -3012,27 +3097,61 @@ var holdStop func()
 // offset moved by 1,200px, with and without the sticky action bar, so it cannot
 // be left to.
 //
-// So the same correction KeepScrollAnchored makes, made continuously and for
-// whatever changes the layout: a MutationObserver (a body landing, a skeleton
-// being replaced) and the capture-phase `load` of an image. Both run before the
-// next paint, so there is no frame showing the shifted pane and nothing for the
-// scroll-spy to read.
+// # It aims at the child, not at a difference
+//
+// The first version added to scrollTop whatever the child's offset had moved
+// by. That keeps a child that ARRIVED where it is, and does nothing for one
+// that never arrived — and not arriving is ordinary. A pane cannot scroll past
+// the end of its content, so a last article reaches the top only once there is
+// a screen of something under it; that something (the end-of-stream edge) is
+// drawn when the LIST says the stream has ended, and an article opened by
+// address is on screen before its list is. For that interval the pane sits as
+// far down as it can go with the article before the target at its top. So the
+// correction is absolute: wherever the child is, that is where the pane goes,
+// as soon as it can.
+//
+// # arrived
+//
+// The caller has a guard armed for the trip (the reader's "what is at the top
+// is not something anybody chose" rule), and used to be released the moment
+// scrollTop was assigned. In the interval above that released it with the wrong
+// article at the top, and the wrong article was marked read: on CI's runners,
+// every time, opening the last article of a feed from its address. So the
+// release waits for the child to be at the top — which in the ordinary case is
+// the same frame — or for the hold to end with the reader's hands on the pane
+// or the time cap, because a release that never comes is the older and worse
+// bug (see ScrollChildToTop). A hold that is superseded reports nothing.
+//
+// The corrections are a MutationObserver (a body landing, a skeleton being
+// replaced), the capture-phase `load` of an image, and a frame loop for what
+// mutates nothing: a font arriving, the content under the target growing. The
+// first two run before the next paint, so there is no frame showing the shifted
+// pane and nothing for the scroll-spy to read.
 //
 // It ends on the first thing that is the READER moving the pane — a wheel, a
 // touch, a press on the scrollbar, a key — because from then on their position
 // is theirs and correcting it would be the pane fighting them. The time cap is
 // for the reader who does none of those: a hold that never ended would still be
-// adding a delta to a pane they scrolled by some means this does not know about.
-func holdChildAtTop(el js.Value, childSelector string) {
+// writing to a pane they scrolled by some means this does not know about.
+func holdChildAtTop(el js.Value, childSelector string, arrived func()) {
 	if holdStop != nil {
 		holdStop()
 	}
+	told := false
+	tell := func() {
+		if told {
+			return
+		}
+		told = true
+		if arrived != nil {
+			arrived()
+		}
+	}
 	doc := js.Global().Get("document")
-	child := doc.Call("querySelector", childSelector)
-	if !child.Truthy() {
+	if !doc.Call("querySelector", childSelector).Truthy() {
+		tell()
 		return
 	}
-	last := child.Get("offsetTop").Float()
 
 	var onMutate, onLoad, onInput js.Func
 	var obs js.Value
@@ -3044,7 +3163,9 @@ func holdChildAtTop(el js.Value, childSelector string) {
 	opts.Set("capture", true)
 	inputs := []string{"wheel", "touchstart", "pointerdown", "keydown"}
 
-	stop := func() {
+	// stop ends the hold. `report` is false only for a hold another open has
+	// superseded.
+	stop := func(report bool) {
 		if stopped {
 			return
 		}
@@ -3060,8 +3181,11 @@ func holdChildAtTop(el js.Value, childSelector string) {
 		onLoad.Release()
 		onInput.Release()
 		capFn.Release()
+		if report {
+			tell()
+		}
 	}
-	holdStop = stop
+	holdStop = func() { stop(false) }
 
 	// Re-queried each time: the reconciler may replace the target's node as well
 	// as resize what is above it.
@@ -3070,15 +3194,27 @@ func holdChildAtTop(el js.Value, childSelector string) {
 		if !c.Truthy() {
 			return
 		}
-		now := c.Get("offsetTop").Float()
-		if d := now - last; d != 0 {
-			el.Set("scrollTop", el.Get("scrollTop").Float()+d)
+		want := c.Get("offsetTop").Float()
+		if d := want - el.Get("scrollTop").Float(); d > 0.5 || d < -0.5 {
+			setScrollTopByApp(el, want)
 		}
-		last = now
+		if d := want - el.Get("scrollTop").Float(); d <= 1 && d >= -1 {
+			tell()
+		}
 	}
-	onMutate = js.FuncOf(func(_ js.Value, _ []js.Value) any { correct(); return nil })
-	onLoad = js.FuncOf(func(_ js.Value, _ []js.Value) any { correct(); return nil })
-	onInput = js.FuncOf(func(_ js.Value, _ []js.Value) any { stop(); return nil })
+	onMutate = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		if !stopped {
+			correct()
+		}
+		return nil
+	})
+	onLoad = js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		if !stopped {
+			correct()
+		}
+		return nil
+	})
+	onInput = js.FuncOf(func(_ js.Value, _ []js.Value) any { stop(true); return nil })
 
 	obs = js.Global().Get("MutationObserver").New(onMutate)
 	cfg := js.Global().Get("Object").New()
@@ -3090,11 +3226,10 @@ func holdChildAtTop(el js.Value, childSelector string) {
 	for _, ev := range inputs {
 		doc.Call("addEventListener", ev, onInput, opts)
 	}
-	capFn = js.FuncOf(func(_ js.Value, _ []js.Value) any { stop(); return nil })
-	// A frame loop beside the observers, for the shifts that mutate nothing: a
-	// font arriving, a skeleton animating out. It releases itself on the first
-	// frame after the hold ends, because a pending frame calling a released func
-	// is a panic.
+	capFn = js.FuncOf(func(_ js.Value, _ []js.Value) any { stop(true); return nil })
+	// A frame loop beside the observers, for the shifts that mutate nothing. It
+	// releases itself on the first frame after the hold ends, because a pending
+	// frame calling a released func is a panic.
 	var tick js.Func
 	tick = js.FuncOf(func(_ js.Value, _ []js.Value) any {
 		if stopped {
@@ -3107,6 +3242,9 @@ func holdChildAtTop(el js.Value, childSelector string) {
 	})
 	js.Global().Call("requestAnimationFrame", tick)
 	timer = js.Global().Call("setTimeout", capFn, 12000)
+	// Once now. In the ordinary case the child is already at the top and this is
+	// where the caller hears so, in the same frame the scroll was assigned.
+	correct()
 }
 
 // FocusedClosest reports whether focus is on, or inside, an element matching the

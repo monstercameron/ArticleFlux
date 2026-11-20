@@ -68,6 +68,14 @@ The full reasoning behind any entry lives in the commit message; this file is th
   because an article above finished loading mid-flight, it is put right before anything is
   counted; and a reader who takes the wheel mid-trip gets their scrolling counted from that
   moment, not from whenever the pane next falls still.
+- **Opening the last article of a feed from its address could mark the one before it read.**
+  A last article can only reach the top of the pane once the list has said the stream ends
+  there, and an addressed article is on screen before its list is. For that moment the pane
+  sat as far down as it could go with the previous article at its top, and that one was taken
+  for the article being read. The pane now keeps aiming at the article that was asked for
+  until it gets there. And underneath all of the timing: after the app sends the pane
+  somewhere, no movement of it counts as the reader's until the reader has touched a wheel,
+  the screen, a pointer or a key.
 
 ### Fixed — 2026-11-19, found by using it: the reader, its addresses, and what a keyboard meets
 
